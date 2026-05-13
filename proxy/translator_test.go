@@ -1914,3 +1914,141 @@ func TestPrepareResponsesBodyHandlesMultipleCompactionItems(t *testing.T) {
 	}
 }
 
+func TestPrepareResponsesBody_NormalizesWebSearchPreviewToolType(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  []byte
+	}{
+		{
+			name: "preview alias",
+			raw: []byte(`{
+				"model":"gpt-5.5",
+				"input":"hi",
+				"tools":[{"type":"web_search_preview"}]
+			}`),
+		},
+		{
+			name: "dated preview alias",
+			raw: []byte(`{
+				"model":"gpt-5.5",
+				"input":"hi",
+				"tools":[{"type":"web_search_preview_2025_03_11"}]
+			}`),
+		},
+		{
+			name: "dated GA alias",
+			raw: []byte(`{
+				"model":"gpt-5.5",
+				"input":"hi",
+				"tools":[{"type":"web_search_2025_08_26"}]
+			}`),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := PrepareResponsesBody(tc.raw)
+
+			toolType := gjson.GetBytes(got, "tools.0.type").String()
+			if toolType != "web_search" {
+				t.Fatalf("expected tools.0.type=web_search, got %q; body=%s", toolType, got)
+			}
+		})
+	}
+}
+
+func TestPrepareResponsesBody_PreservesWebSearchAllowedConfigFields(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.5",
+		"input":"hi",
+		"tools":[{
+			"type":"web_search_preview",
+			"search_context_size":"high",
+			"user_location":{"type":"approximate","country":"JP","city":"Tokyo"},
+			"filters":{"allowed_domains":["example.com"]}
+		}]
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	if toolType := gjson.GetBytes(got, "tools.0.type").String(); toolType != "web_search" {
+		t.Fatalf("expected tools.0.type=web_search, got %q; body=%s", toolType, got)
+	}
+	if size := gjson.GetBytes(got, "tools.0.search_context_size").String(); size != "high" {
+		t.Fatalf("expected search_context_size=high, got %q; body=%s", size, got)
+	}
+	if country := gjson.GetBytes(got, "tools.0.user_location.country").String(); country != "JP" {
+		t.Fatalf("expected user_location.country=JP, got %q; body=%s", country, got)
+	}
+	if city := gjson.GetBytes(got, "tools.0.user_location.city").String(); city != "Tokyo" {
+		t.Fatalf("expected user_location.city=Tokyo, got %q; body=%s", city, got)
+	}
+	if dom := gjson.GetBytes(got, "tools.0.filters.allowed_domains.0").String(); dom != "example.com" {
+		t.Fatalf("expected filters.allowed_domains[0]=example.com, got %q; body=%s", dom, got)
+	}
+}
+
+func TestPrepareResponsesBody_DropsUnknownWebSearchFields(t *testing.T) {
+	// Codex 上游对未知字段严格校验，会回 400 unknown_parameter。
+	// 归一时必须丢弃白名单以外的字段。
+	raw := []byte(`{
+		"model":"gpt-5.5",
+		"input":"hi",
+		"tools":[{
+			"type":"web_search",
+			"search_context_size":"low",
+			"totally_made_up":"yes",
+			"another_garbage":123
+		}]
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	if size := gjson.GetBytes(got, "tools.0.search_context_size").String(); size != "low" {
+		t.Fatalf("expected search_context_size to survive, got %q; body=%s", size, got)
+	}
+	for _, k := range []string{"totally_made_up", "another_garbage"} {
+		if gjson.GetBytes(got, "tools.0."+k).Exists() {
+			t.Fatalf("expected tools.0.%s to be stripped; body=%s", k, got)
+		}
+	}
+}
+
+func TestPrepareResponsesBody_KeepsBareWebSearchToolUnchanged(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.5",
+		"input":"hi",
+		"tools":[{"type":"web_search"}]
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	if toolType := gjson.GetBytes(got, "tools.0.type").String(); toolType != "web_search" {
+		t.Fatalf("expected tools.0.type=web_search, got %q; body=%s", toolType, got)
+	}
+}
+
+func TestTranslateRequest_NormalizesWebSearchPreviewToolType(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.5",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"type":"web_search_preview","search_context_size":"high","totally_made_up":"yes"}]
+	}`)
+
+	got, err := TranslateRequest(raw)
+	if err != nil {
+		t.Fatalf("TranslateRequest returned error: %v", err)
+	}
+
+	toolType := gjson.GetBytes(got, "tools.0.type").String()
+	if toolType != "web_search" {
+		t.Fatalf("expected tools.0.type=web_search, got %q; body=%s", toolType, got)
+	}
+	if size := gjson.GetBytes(got, "tools.0.search_context_size").String(); size != "high" {
+		t.Fatalf("expected search_context_size to survive, got %q; body=%s", size, got)
+	}
+	if gjson.GetBytes(got, "tools.0.totally_made_up").Exists() {
+		t.Fatalf("expected unknown field to be stripped; body=%s", got)
+	}
+}
+
