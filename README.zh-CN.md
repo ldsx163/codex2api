@@ -83,6 +83,7 @@
 - [核心能力](#核心能力)
 - [目录结构](#目录结构)
 - [常见注意事项](#常见注意事项)
+- [赞助商](#赞助商)
 - [免责声明](#免责声明与开源协议)
 - [Star History](#star-history)
 - [友情链接](#友情链接)
@@ -515,6 +516,19 @@ codex2api/
 - 本地手动构建 Go 二进制前需先执行 `frontend/` 的 `npm run build`
 - `.env` 只负责端口、数据库、Redis 等物理层配置；业务参数在管理台数据库里维护
 - API Key 以数据库为准，在管理台中配置
+
+---
+
+## 赞助商
+
+> 想出现在这里？请到 GitHub 提交 Issue 联系。
+
+<table>
+<tr>
+<td width="180" align="center" valign="middle"><a href="https://ai.centos.hk"><b>星辰·AI</b></a></td>
+<td valign="middle">感谢 <b><a href="https://ai.centos.hk">星辰·AI</a></b> 赞助了本项目！星辰·AI 提供稳定、高速的 Claude Code / Codex / Gemini 中转服务，面向个人开发者与团队均适用。</td>
+</tr>
+</table>
 
 ---
 
