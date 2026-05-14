@@ -252,6 +252,7 @@ export default function Accounts() {
     | "all"
     | "normal"
     | "rate_limited"
+    | "abnormal"
     | "banned"
     | "error"
     | "disabled"
@@ -507,21 +508,41 @@ export default function Accounts() {
 
   const accountSummary = useMemo(() => {
     const rateLimitedWindowStats = getRateLimitedWindowStats(accounts);
+    // 互斥分类:每个账号只属于 异常 / 限流 / 正常 之一,三者相加等于总数。
+    // 优先级:异常(封禁/错误/禁用) > 限流 > 正常。locked 不影响分类,视为正常状态的一种子标记。
+    const bannedAccounts = accounts.filter(
+      (account) => account.status === "unauthorized",
+    ).length;
+    const errorAccounts = accounts.filter(
+      (account) => account.status === "error",
+    ).length;
+    const disabledAccounts = accounts.filter(
+      (account) => account.enabled === false,
+    ).length;
+    const abnormalAccounts = accounts.filter(
+      (account) =>
+        account.status === "unauthorized" ||
+        account.status === "error" ||
+        account.enabled === false,
+    ).length;
+    const rateLimitedExclusive = accounts.filter(
+      (account) =>
+        account.status !== "unauthorized" &&
+        account.status !== "error" &&
+        account.enabled !== false &&
+        isRateLimitedAccount(account),
+    ).length;
+    const normalAccounts = accounts.length - abnormalAccounts - rateLimitedExclusive;
     return {
       totalAccounts: accounts.length,
-      normalAccounts: accounts.filter(
-        (account) => account.status === "active" || account.status === "ready",
-      ).length,
-      rateLimitedAccounts: rateLimitedWindowStats.total,
+      normalAccounts,
+      rateLimitedAccounts: rateLimitedExclusive,
       rateLimited5hAccounts: rateLimitedWindowStats.fiveHour,
       rateLimited7dAccounts: rateLimitedWindowStats.sevenDay,
-      bannedAccounts: accounts.filter(
-        (account) => account.status === "unauthorized",
-      ).length,
-      errorAccounts: accounts.filter((account) => account.status === "error")
-        .length,
-      disabledAccounts: accounts.filter((account) => account.enabled === false)
-        .length,
+      abnormalAccounts,
+      bannedAccounts,
+      errorAccounts,
+      disabledAccounts,
       lockedAccounts: accounts.filter((account) => account.locked).length,
       subscriptionAccountsToLock: accounts.filter(
         (account) => isSubscriptionPlan(account.plan_type) && !account.locked,
@@ -542,6 +563,7 @@ export default function Accounts() {
     rateLimitedAccounts,
     rateLimited5hAccounts,
     rateLimited7dAccounts,
+    abnormalAccounts,
     bannedAccounts,
     errorAccounts,
     disabledAccounts,
@@ -567,11 +589,32 @@ export default function Accounts() {
     return accounts.filter((account) => {
       switch (statusFilter) {
         case "normal":
+          if (
+            account.status === "unauthorized" ||
+            account.status === "error" ||
+            account.enabled === false ||
+            isRateLimitedAccount(account)
+          )
+            return false;
           if (account.status !== "active" && account.status !== "ready")
             return false;
           break;
         case "rate_limited":
+          if (
+            account.status === "unauthorized" ||
+            account.status === "error" ||
+            account.enabled === false
+          )
+            return false;
           if (!isRateLimitedAccount(account)) return false;
+          break;
+        case "abnormal":
+          if (
+            account.status !== "unauthorized" &&
+            account.status !== "error" &&
+            account.enabled !== false
+          )
+            return false;
           break;
         case "banned":
           if (account.status !== "unauthorized") return false;
@@ -2164,7 +2207,7 @@ export default function Accounts() {
             }
           />
 
-          <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-5">
+          <div className="mb-4 grid grid-cols-2 gap-3 xl:grid-cols-4">
             <CompactStat
               label={t("accounts.totalAccounts")}
               chipLabel={t("accounts.filterAll")}
@@ -2188,16 +2231,15 @@ export default function Accounts() {
               ]}
             />
             <CompactStat
-              label={t("accounts.bannedAccounts")}
-              chipLabel={t("accounts.filterBanned")}
-              value={bannedAccounts}
+              label={t("accounts.abnormalAccounts")}
+              chipLabel={t("accounts.filterAbnormal")}
+              value={abnormalAccounts}
               tone="danger"
-            />
-            <CompactStat
-              label={t("accounts.errorAccounts")}
-              chipLabel={t("accounts.filterError")}
-              value={errorAccounts}
-              tone="danger"
+              details={[
+                { label: t("accounts.abnormalBannedShort"), value: bannedAccounts },
+                { label: t("accounts.abnormalErrorShort"), value: errorAccounts },
+                { label: t("accounts.abnormalDisabledShort"), value: disabledAccounts },
+              ]}
             />
           </div>
 
@@ -2229,6 +2271,7 @@ export default function Accounts() {
                   ["all", t("accounts.filterAll")],
                   ["normal", t("accounts.filterNormal")],
                   ["rate_limited", t("accounts.filterRateLimited")],
+                  ["abnormal", t("accounts.filterAbnormal")],
                   ["banned", t("accounts.filterBanned")],
                   ["error", t("accounts.filterError")],
                   ["disabled", t("accounts.filterDisabled")],
@@ -2254,13 +2297,15 @@ export default function Accounts() {
                       ? normalAccounts
                       : key === "rate_limited"
                         ? rateLimitedAccounts
-                        : key === "banned"
-                          ? bannedAccounts
-                          : key === "error"
-                            ? errorAccounts
-                            : key === "disabled"
-                              ? disabledAccounts
-                              : lockedAccounts}
+                        : key === "abnormal"
+                          ? abnormalAccounts
+                          : key === "banned"
+                            ? bannedAccounts
+                            : key === "error"
+                              ? errorAccounts
+                              : key === "disabled"
+                                ? disabledAccounts
+                                : lockedAccounts}
                 </button>
               ))}
             </div>
@@ -5202,7 +5247,7 @@ function CompactStat({
             {details.map((item) => (
               <div
                 key={item.label}
-                className="grid grid-cols-[2ch_auto_max-content] items-center gap-x-0.5 tabular-nums"
+                className="grid grid-cols-[max-content_auto_max-content] items-center gap-x-0.5 whitespace-nowrap tabular-nums"
               >
                 <span className="justify-self-start">{item.label}</span>
                 <span className="justify-self-center">：</span>
