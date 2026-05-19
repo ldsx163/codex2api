@@ -23,7 +23,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Copy, Download, Eye, Image as ImageIcon, Loader2, Pencil, Play, Plus, RefreshCcw, Save, Search, Sparkles, Star, Trash2, X } from 'lucide-react'
+import { Copy, Download, Eye, Image as ImageIcon, Loader2, Pencil, Play, Plus, RefreshCcw, Save, Search, Sparkles, Star, Trash2, Upload, X } from 'lucide-react'
 
 const IMAGE_VIEWS = ['studio', 'prompts', 'gallery', 'history'] as const
 type ImageView = typeof IMAGE_VIEWS[number]

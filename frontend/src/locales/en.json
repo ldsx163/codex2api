@@ -550,7 +550,12 @@
     "batchMetaDesc": "The following tags and groups will be saved to {{count}} selected accounts. Leaving a field empty clears it.",
     "batchMetaDone": "Batch metadata save complete: {{success}} succeeded, {{fail}} failed",
     "batchMetaFailed": "Batch metadata save failed: {{error}}",
-    "testAutoReset": "Test passed, account status has been automatically restored to normal"
+    "testAutoReset": "Test passed, account status has been automatically restored to normal",
+    "creditSettings": "Credit Settings",
+    "creditEnabled": "Credit Enabled",
+    "creditEnabledHint": "Mark this account as having extra credits",
+    "creditSkipWindow": "Skip Usage Window Penalty",
+    "creditSkipWindowHint": "Bypass 7d/5h usage window penalties during scheduling"
   },
   "status": {
     "active": "Available",
@@ -938,6 +943,10 @@
     "timezoneAuto": "Auto (Browser Timezone)",
     "fastSchedulerEnabled": "Fast Scheduler",
     "fastSchedulerEnabledDesc": "Uses an in-memory fast scheduling algorithm, significantly reducing dispatch latency under high concurrency. Recommended for large account pools (100+).",
+    "schedulerMode": "Scheduler Mode",
+    "schedulerModeDesc": "Round Robin distributes requests evenly across accounts. Remaining Quota prefers accounts with lower usage percentage.",
+    "schedulerModeRoundRobin": "Round Robin",
+    "schedulerModeRemainingQuota": "Remaining Quota",
     "allowRemoteMigration": "Allow Remote Migration",
     "allowRemoteMigrationDesc": "When enabled, other codex2api instances can pull healthy accounts from this instance.",
     "allowRemoteMigrationRequiresSecret": "Set an admin secret first. Remote migration cannot be enabled without admin authentication.",
@@ -1373,6 +1382,12 @@
     "deleteAssetTitle": "Delete gallery image",
     "assetDeleted": "Image deleted",
     "assetDeletedInHistory": "Image has been deleted",
+    "imageToImage": "Image to Image",
+    "textToImage": "Text to Image",
+    "inputImage": "Reference Image",
+    "inputImageHint": "Upload one or more reference images; AI will modify based on these images",
+    "inputImageRequired": "Reference image is required for image-to-image mode",
+    "removeImage": "Remove image",
     "loadFailed": "Failed to load image studio",
     "status": {
       "queued": "Queued",

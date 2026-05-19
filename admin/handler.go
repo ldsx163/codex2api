@@ -242,6 +242,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.PATCH("/image-prompts/:id", h.UpdateImagePromptTemplate)
 	api.DELETE("/image-prompts/:id", h.DeleteImagePromptTemplate)
 	api.POST("/images/jobs", h.CreateImageGenerationJob)
+		api.POST("/images/edit-jobs", h.CreateImageEditJob)
 	api.GET("/images/jobs", h.ListImageGenerationJobs)
 	api.GET("/images/jobs/:id", h.GetImageGenerationJob)
 	api.DELETE("/images/jobs/:id", h.DeleteImageGenerationJob)
@@ -638,6 +639,40 @@ type updateAccountSchedulerReq struct {
 }
 
 // UpdateAccountScheduler 更新账号调度配置。
+// UpdateAccountCredit 更新账号信用设置
+func (h *Handler) UpdateAccountCredit(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+
+	var req struct {
+		CreditEnabled         *bool `json:"credit_enabled"`
+		CreditSkipUsageWindow *bool `json:"credit_skip_usage_window"`
+	}
+	if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+
+	creditEnabled := false
+	if req.CreditEnabled != nil {
+		creditEnabled = *req.CreditEnabled
+	}
+	creditSkipUsageWindow := false
+	if req.CreditSkipUsageWindow != nil {
+		creditSkipUsageWindow = *req.CreditSkipUsageWindow
+	}
+
+	if err := h.store.UpdateAccountCredit(id, creditEnabled, creditSkipUsageWindow); err != nil {
+		writeError(c, http.StatusInternalServerError, "更新信用设置失败: "+err.Error())
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "信用设置已更新", "credit_enabled": creditEnabled, "credit_skip_usage_window": creditSkipUsageWindow})
+}
+
 func (h *Handler) UpdateAccountScheduler(c *gin.Context) {
 	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -3496,6 +3531,7 @@ type settingsResponse struct {
 	AutoCleanExpired                 bool   `json:"auto_clean_expired"`
 	ProxyPoolEnabled                 bool   `json:"proxy_pool_enabled"`
 	FastSchedulerEnabled             bool   `json:"fast_scheduler_enabled"`
+	SchedulerMode                    string `json:"scheduler_mode"`
 	MaxRetries                       int    `json:"max_retries"`
 	MaxRateLimitRetries              int    `json:"max_rate_limit_retries"`
 	AllowRemoteMigration             bool   `json:"allow_remote_migration"`
@@ -3554,6 +3590,7 @@ type updateSettingsReq struct {
 	AutoCleanExpired                 *bool   `json:"auto_clean_expired"`
 	ProxyPoolEnabled                 *bool   `json:"proxy_pool_enabled"`
 	FastSchedulerEnabled             *bool   `json:"fast_scheduler_enabled"`
+	SchedulerMode                    *string `json:"scheduler_mode"`
 	MaxRetries                       *int    `json:"max_retries"`
 	MaxRateLimitRetries              *int    `json:"max_rate_limit_retries"`
 	AllowRemoteMigration             *bool   `json:"allow_remote_migration"`
@@ -3694,6 +3731,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		AutoCleanExpired:                 h.store.GetAutoCleanExpired(),
 		ProxyPoolEnabled:                 h.store.GetProxyPoolEnabled(),
 		FastSchedulerEnabled:             h.store.FastSchedulerEnabled(),
+			SchedulerMode:                    h.store.GetSchedulerMode(),
 		MaxRetries:                       h.store.GetMaxRetries(),
 		MaxRateLimitRetries:              h.store.GetMaxRateLimitRetries(),
 		AllowRemoteMigration:             h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",
@@ -3924,6 +3962,11 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	if req.FastSchedulerEnabled != nil {
 		h.store.SetFastSchedulerEnabled(*req.FastSchedulerEnabled)
 		log.Printf("设置已更新: fast_scheduler_enabled = %t", *req.FastSchedulerEnabled)
+	}
+
+	if req.SchedulerMode != nil {
+		h.store.SetSchedulerMode(*req.SchedulerMode)
+		log.Printf("设置已更新: scheduler_mode = %s", *req.SchedulerMode)
 	}
 
 	if req.MaxRetries != nil {
@@ -4167,6 +4210,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AutoCleanExpired:                 h.store.GetAutoCleanExpired(),
 		ProxyPoolEnabled:                 h.store.GetProxyPoolEnabled(),
 		FastSchedulerEnabled:             h.store.FastSchedulerEnabled(),
+			SchedulerMode:                    h.store.GetSchedulerMode(),
 		MaxRetries:                       h.store.GetMaxRetries(),
 		MaxRateLimitRetries:              h.store.GetMaxRateLimitRetries(),
 		AllowRemoteMigration:             h.store.GetAllowRemoteMigration() && hasAdminSecret,
@@ -4230,6 +4274,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		AutoCleanExpired:                 h.store.GetAutoCleanExpired(),
 		ProxyPoolEnabled:                 h.store.GetProxyPoolEnabled(),
 		FastSchedulerEnabled:             h.store.FastSchedulerEnabled(),
+			SchedulerMode:                    h.store.GetSchedulerMode(),
 		MaxRetries:                       h.store.GetMaxRetries(),
 		MaxRateLimitRetries:              h.store.GetMaxRateLimitRetries(),
 		AllowRemoteMigration:             h.store.GetAllowRemoteMigration() && adminAuthSource != "disabled",

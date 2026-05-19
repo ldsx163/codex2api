@@ -346,6 +346,10 @@ export default function Settings() {
     { label: t('common.disabled'), value: 'false' },
     { label: t('common.enabled'), value: 'true' },
   ]
+  const schedulerModeOptions = [
+    { label: t('settings.schedulerModeRoundRobin'), value: 'round_robin' },
+    { label: t('settings.schedulerModeRemainingQuota'), value: 'remaining_quota' },
+  ]
   const clientCompatOptions = [
     { label: t('settings.clientCompatPreserve'), value: 'preserve' },
     { label: t('settings.clientCompatAuto'), value: 'auto' },
@@ -385,6 +389,7 @@ export default function Settings() {
     auto_clean_full_usage: false,
     proxy_pool_enabled: false,
     fast_scheduler_enabled: false,
+    scheduler_mode: 'round_robin',
     max_retries: 2,
     max_rate_limit_retries: 1,
     allow_remote_migration: false,
@@ -716,6 +721,13 @@ export default function Settings() {
                     value={settingsForm.fast_scheduler_enabled ? 'true' : 'false'}
                     onValueChange={(value) => setSettingsForm((f) => ({ ...f, fast_scheduler_enabled: value === 'true' }))}
                     options={booleanOptions}
+                  />
+                </SettingField>
+                <SettingField label={t('settings.schedulerMode')} description={t('settings.schedulerModeDesc')}>
+                  <Select
+                    value={settingsForm.scheduler_mode}
+                    onValueChange={(value) => setSettingsForm((f) => ({ ...f, scheduler_mode: value }))}
+                    options={schedulerModeOptions}
                   />
                 </SettingField>
               </div>

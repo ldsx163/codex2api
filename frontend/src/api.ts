@@ -336,6 +336,8 @@ export const api = {
     request<MessageResponse>(`/image-prompts/${id}`, { method: 'DELETE' }),
   createImageJob: (data: CreateImageJobPayload) =>
     request<ImageJobResponse>('/images/jobs', { method: 'POST', body: JSON.stringify(data) }),
+  createImageEditJob: (data: CreateImageJobPayload) =>
+    request<ImageJobResponse>('/images/edit-jobs', { method: 'POST', body: JSON.stringify(data) }),
   getImageJobs: (params: { page?: number; pageSize?: number } = {}) => {
     const sp = new URLSearchParams()
     if (params.page) sp.set('page', String(params.page))

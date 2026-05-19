@@ -24,7 +24,7 @@ func TestFastSchedulerAcquirePrefersHealthyTier(t *testing.T) {
 	warm := newFastSchedulerTestAccount(1, HealthTierWarm, 90, 2)
 	healthy := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{warm, healthy})
 
 	got := scheduler.Acquire()
@@ -43,7 +43,7 @@ func TestFastSchedulerSkipsDispatchPausedAccount(t *testing.T) {
 	atomic.StoreInt32(&paused.DispatchPaused, 1)
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{paused, fallback})
 
 	got := scheduler.Acquire()
@@ -62,7 +62,7 @@ func TestFastSchedulerSkipsErrorAccount(t *testing.T) {
 	errored.Status = StatusError
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 2)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{errored, fallback})
 
 	got := scheduler.Acquire()
@@ -79,7 +79,7 @@ func TestFastSchedulerSkipsErrorAccount(t *testing.T) {
 func TestFastSchedulerRespectsConcurrencyLimit(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	first := scheduler.Acquire()
@@ -105,7 +105,7 @@ func TestFastSchedulerRoundRobinWithinTier(t *testing.T) {
 	a2 := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 4)
 	a3 := newFastSchedulerTestAccount(3, HealthTierHealthy, 100, 4)
 
-	scheduler := NewFastScheduler(4)
+	scheduler := NewFastScheduler(4, "round_robin")
 	scheduler.Rebuild([]*Account{a1, a2, a3})
 
 	var got []int64
@@ -287,7 +287,7 @@ func TestFastSchedulerAcquireExcludingRespectsAPIKeyWhitelist(t *testing.T) {
 	restricted.SetAllowedAPIKeyIDs([]int64{2})
 	fallback := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{restricted, fallback})
 
 	got := scheduler.AcquireExcluding(1, nil)
@@ -307,7 +307,7 @@ func TestFastSchedulerAcquireExcludingWithFilterRespectsPlanFilter(t *testing.T)
 	pro := newFastSchedulerTestAccount(2, HealthTierHealthy, 80, 1)
 	pro.PlanType = "pro"
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{plus, pro})
 
 	got := scheduler.AcquireExcludingWithFilter(0, nil, func(acc *Account) bool {
@@ -325,7 +325,7 @@ func TestFastSchedulerAcquireExcludingWithFilterRespectsPlanFilter(t *testing.T)
 
 func TestFastSchedulerUpdateMovesAccountBetweenBuckets(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	sizes := scheduler.BucketSizes()
@@ -358,7 +358,7 @@ func TestFastSchedulerUpdateMovesAccountBetweenBuckets(t *testing.T) {
 
 func TestFastSchedulerSkipsStaleBucketEntryWithoutUpdate(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 1)
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	acc.SetCooldownUntil(time.Now().Add(5*time.Minute), "rate_limited")
@@ -392,7 +392,7 @@ func TestFastSchedulerDispatchScoreOutranksProvenHistory(t *testing.T) {
 	proven := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1)
 	atomic.StoreInt64(&proven.TotalRequests, 11)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{highScore, proven})
 
 	got := scheduler.Acquire()
@@ -413,7 +413,7 @@ func TestFastSchedulerProvenHistoryBreaksDispatchScoreTies(t *testing.T) {
 	proven := newFastSchedulerTestAccount(2, HealthTierHealthy, 100, 1)
 	atomic.StoreInt64(&proven.TotalRequests, 11)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{unproven, proven})
 
 	got := scheduler.Acquire()
@@ -442,7 +442,7 @@ func TestFastSchedulerPrefersPremium7dResetSoonOverProvenAccount(t *testing.T) {
 	soon.UsagePercent7dValid = true
 	soon.Reset7dAt = now.Add(36 * time.Hour)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{later, soon})
 
 	got := scheduler.Acquire()
@@ -470,7 +470,7 @@ func TestFastSchedulerPrefersPremium5hResetSoonWithinTier(t *testing.T) {
 	soon.UsagePercent5hValid = true
 	soon.Reset5hAt = now.Add(30 * time.Minute)
 
-	scheduler := NewFastScheduler(1)
+	scheduler := NewFastScheduler(1, "round_robin")
 	scheduler.Rebuild([]*Account{later, soon})
 
 	got := scheduler.Acquire()
@@ -600,7 +600,7 @@ func TestFastSchedulerPremium5hRateLimitIsFencedAndRecoversAfterReset(t *testing
 		Reset5hAt:           time.Now().Add(30 * time.Minute),
 	}
 
-	scheduler := NewFastScheduler(4)
+	scheduler := NewFastScheduler(4, "round_robin")
 	scheduler.Rebuild([]*Account{acc})
 
 	sizes := scheduler.BucketSizes()
@@ -784,7 +784,7 @@ func TestFastSchedulerRelease(t *testing.T) {
 	acc := newFastSchedulerTestAccount(1, HealthTierHealthy, 100, 2)
 	atomic.StoreInt64(&acc.ActiveRequests, 1)
 
-	scheduler := NewFastScheduler(2)
+	scheduler := NewFastScheduler(2, "round_robin")
 	scheduler.Release(acc)
 
 	if got := atomic.LoadInt64(&acc.ActiveRequests); got != 0 {

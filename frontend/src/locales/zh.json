@@ -550,7 +550,12 @@
     "batchMetaDesc": "将为 {{count}} 个选中账号统一保存以下标签和分组。留空会清空对应字段。",
     "batchMetaDone": "批量保存完成：成功 {{success}}，失败 {{fail}}",
     "batchMetaFailed": "批量保存失败：{{error}}",
-    "testAutoReset": "测试成功，账号状态已自动恢复为正常"
+    "testAutoReset": "测试成功，账号状态已自动恢复为正常",
+    "creditSettings": "信用设置",
+    "creditEnabled": "启用信用",
+    "creditEnabledHint": "标记该账号拥有额外信用",
+    "creditSkipWindow": "跳过用量窗口惩罚",
+    "creditSkipWindowHint": "调度时不使用 7d/5h 用量窗口降权"
   },
   "status": {
     "active": "可用",
@@ -938,6 +943,10 @@
     "timezoneAuto": "自动（浏览器时区）",
     "fastSchedulerEnabled": "快速调度器",
     "fastSchedulerEnabledDesc": "启用后，账号选择将使用内存快速调度算法，大幅降低高并发场景下的调度延迟。适合大号池（100+ 账号）场景。",
+    "schedulerMode": "调度模式",
+    "schedulerModeDesc": "轮询模式在所有账号间平均分配请求。剩余配额模式优先使用用量较低的账号。",
+    "schedulerModeRoundRobin": "轮询",
+    "schedulerModeRemainingQuota": "剩余配额",
     "allowRemoteMigration": "允许远程迁移",
     "allowRemoteMigrationDesc": "开启后，其他 codex2api 实例可通过导出接口拉取本实例的健康账号。",
     "allowRemoteMigrationRequiresSecret": "请先设置管理密钥，未设置密码时不能启用远程迁移。",
@@ -1373,6 +1382,12 @@
     "deleteAssetTitle": "删除图库图片",
     "assetDeleted": "图片已删除",
     "assetDeletedInHistory": "图片已经被删除",
+    "imageToImage": "图生图",
+    "textToImage": "文生图",
+    "inputImage": "参考图片",
+    "inputImageHint": "上传一张或多张参考图片，AI 将基于这些图片进行修改",
+    "inputImageRequired": "图生图模式需要上传参考图片",
+    "removeImage": "移除图片",
     "loadFailed": "加载生图工作台失败",
     "status": {
       "queued": "排队中",

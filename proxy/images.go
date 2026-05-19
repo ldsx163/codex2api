@@ -43,6 +43,10 @@ const (
 	defaultImages4KSquareSize    = "2880x2880"
 
 	maxGPTImage2Pixels = 8294400
+
+	// maxImageAttempts caps the total number of upstream attempts for image
+	// generation requests, including retries across different accounts.
+	maxImageAttempts = 5
 )
 
 type imageCallResult struct {
@@ -875,7 +879,7 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 	var lastBody []byte
 	excludeAccounts := make(map[int64]bool)
 
-	for attempt := 0; ; attempt++ {
+	for attempt := 0; attempt < maxImageAttempts; attempt++ {
 		account, stickyProxyURL := h.nextImageAccount(apiKeyID, excludeAccounts, requestModel)
 		if account == nil {
 			account, stickyProxyURL = h.store.WaitForSessionAvailableWithFilter(c.Request.Context(), "", 30*time.Second, apiKeyID, excludeAccounts, h.withModelCooldownFilter(requestModel, nil))
@@ -980,6 +984,19 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		statusCode := http.StatusOK
 		if readErr != nil {
 			statusCode = http.StatusBadGateway
+			// Retry stream read errors on next account when there are attempts left.
+			// Stream disconnects and upstream image generation failures can be
+			// transient (e.g. upstream model overload, network hiccup).
+			resp.Body.Close()
+			h.store.Release(account)
+			excludeAccounts[account.ID()] = true
+			if shouldRetryImageStreamError(readErr, &generalRetries, maxRetries, attempt, maxImageAttempts) {
+				lastStatusCode = statusCode
+				lastBody = []byte(readErr.Error())
+				continue
+			}
+			// Non-retryable -- deliver error response already written above.
+			return
 		}
 		logInput := &database.UsageLogInput{
 			AccountID:        account.ID(),
@@ -1023,7 +1040,38 @@ func (h *Handler) forwardImagesRequest(c *gin.Context, inboundEndpoint, requestM
 		h.store.Release(account)
 		return
 	}
+	// Exhausted all attempts.
+	if lastStatusCode > 0 && len(lastBody) > 0 {
+		h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
+		return
+	}
+	c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(""))
+}
 
+// shouldRetryImageStreamError determines whether an image generation stream
+// read error warrants retrying on a different account. Transient failures
+// (stream disconnects, upstream model errors) are retryable; permanent
+// failures (content policy, invalid request, quota exhausted) are not.
+func shouldRetryImageStreamError(err error, generalRetries *int, maxGeneralRetries int, attempt int, maxAttempts int) bool {
+	if err == nil || generalRetries == nil || *generalRetries >= maxGeneralRetries {
+		return false
+	}
+	if attempt >= maxAttempts-1 {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	// Never retry content policy or safety violations.
+	for _, keyword := range []string{
+		"content_policy", "safety", "cyber_policy",
+		"unsupported_country", "invalid_request",
+	} {
+		if strings.Contains(msg, keyword) {
+			return false
+		}
+	}
+	// Retry transient upstream issues.
+	*generalRetries++
+	return true
 }
 
 func collectImagesResponse(body io.Reader, responseFormat, fallbackModel string) ([]byte, *UsageInfo, int, imageUsageLogInfo, error) {
