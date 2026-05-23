@@ -350,6 +350,11 @@ export default function Settings() {
     { label: t('settings.schedulerModeRoundRobin'), value: 'round_robin' },
     { label: t('settings.schedulerModeRemainingQuota'), value: 'remaining_quota' },
   ]
+  const affinityModeOptions = [
+    { label: t('settings.affinityModeBounded'), value: 'bounded' },
+    { label: t('settings.affinityModeOff'), value: 'off' },
+    { label: t('settings.affinityModeStrict'), value: 'strict' },
+  ]
   const clientCompatOptions = [
     { label: t('settings.clientCompatPreserve'), value: 'preserve' },
     { label: t('settings.clientCompatAuto'), value: 'auto' },
@@ -400,6 +405,7 @@ export default function Settings() {
     proxy_pool_enabled: false,
     fast_scheduler_enabled: false,
     scheduler_mode: 'round_robin',
+    affinity_mode: 'bounded',
     max_retries: 2,
     max_rate_limit_retries: 1,
     allow_remote_migration: false,
@@ -749,6 +755,13 @@ export default function Settings() {
                     value={settingsForm.scheduler_mode}
                     onValueChange={(value) => setSettingsForm((f) => ({ ...f, scheduler_mode: value }))}
                     options={schedulerModeOptions}
+                  />
+                </SettingField>
+                <SettingField label={t('settings.affinityMode')} description={t('settings.affinityModeDesc')}>
+                  <Select
+                    value={settingsForm.affinity_mode || 'bounded'}
+                    onValueChange={(value) => setSettingsForm((f) => ({ ...f, affinity_mode: value }))}
+                    options={affinityModeOptions}
                   />
                 </SettingField>
               </div>
