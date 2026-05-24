@@ -2521,7 +2521,9 @@ func (s *Store) Stop() {
 	s.wg.Wait()
 }
 
-// CleanByRuntimeStatus 按运行时状态清理账号
+// CleanByRuntimeStatus 按运行时状态清理账号（用于自动清理流程）
+// premium 5h 限流账号会被跳过，因为它们会在 5h 内自然恢复，无需删除。
+// 手动一键清理请改用 CleanRateLimitedManual——它会清掉所有限流账号。
 func (s *Store) CleanByRuntimeStatus(ctx context.Context, targetStatus string) int {
 	accounts := s.Accounts()
 	cleaned := 0
@@ -2550,6 +2552,45 @@ func (s *Store) CleanByRuntimeStatus(ctx context.Context, targetStatus string) i
 		cleaned++
 		if s.db != nil {
 			s.db.InsertAccountEventAsync(acc.DBID, "deleted", "auto_clean")
+		}
+	}
+
+	return cleaned
+}
+
+// CleanRateLimitedManual 清理所有"限流"含义下的账号（用于手动一键清理）。
+// 与 CleanByRuntimeStatus("rate_limited") 的区别：
+//   - 涵盖 RuntimeStatus 的全部限流相关值：rate_limited / usage_exhausted
+//   - 不跳过 premium 5h 限流：手动触发即代表用户明确意图删除
+//   - 锁定账号依然跳过（与所有清理流程一致）
+func (s *Store) CleanRateLimitedManual(ctx context.Context) int {
+	accounts := s.Accounts()
+	cleaned := 0
+
+	for _, acc := range accounts {
+		if acc == nil {
+			continue
+		}
+		status := acc.RuntimeStatus()
+		if status != "rate_limited" && status != "usage_exhausted" {
+			continue
+		}
+
+		if atomic.LoadInt32(&acc.Locked) == 1 {
+			continue
+		}
+
+		if s.db != nil {
+			if err := s.db.SoftDeleteAccount(ctx, acc.DBID); err != nil {
+				log.Printf("[账号 %d] 手动清理限流账号失败: %v", acc.DBID, err)
+				continue
+			}
+		}
+
+		s.RemoveAccount(acc.DBID)
+		cleaned++
+		if s.db != nil {
+			s.db.InsertAccountEventAsync(acc.DBID, "deleted", "manual_clean")
 		}
 	}
 
