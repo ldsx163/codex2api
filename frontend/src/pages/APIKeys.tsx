@@ -2,6 +2,7 @@ import type { ChangeEvent, FormEvent, ReactNode } from "react";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { api } from "../api";
+import APIKeyTokenUsagePanel from "../components/APIKeyTokenUsagePanel";
 import ChipInput from "../components/ChipInput";
 import Modal from "../components/Modal";
 import PageHeader from "../components/PageHeader";
@@ -109,6 +110,7 @@ export default function APIKeys() {
     useState<CreateKeyFormState>(initialCreateForm);
   const [createdKeyId, setCreatedKeyId] = useState<number | null>(null);
   const [visibleKeys, setVisibleKeys] = useState<Set<number>>(new Set());
+  const [activeTab, setActiveTab] = useState<"keys" | "token-usage">("keys");
   const [creating, setCreating] = useState(false);
   const [deletingIds, setDeletingIds] = useState<Set<number>>(new Set());
   const [editingKey, setEditingKey] = useState<APIKeyRow | null>(null);
@@ -414,6 +416,30 @@ export default function APIKeys() {
         </div>
 
         <div className="space-y-4">
+          {/* Tab 切换：密钥列表 / Token 用量统计（issue #162）*/}
+          <div className="inline-flex items-center gap-0.5 rounded-lg border border-border bg-muted/30 p-0.5">
+            {(
+              [
+                ["keys", t("apiKeys.tabKeys")],
+                ["token-usage", t("apiKeys.tabTokenUsage")],
+              ] as const
+            ).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setActiveTab(key)}
+                className={`rounded-md px-3 py-1.5 text-[13px] font-semibold transition-colors ${
+                  activeTab === key
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === "keys" && (
           <Card>
             <CardContent className="p-3 sm:p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -590,6 +616,15 @@ export default function APIKeys() {
               </StateShell>
             </CardContent>
           </Card>
+          )}
+
+          {activeTab === "token-usage" && (
+            <Card>
+              <CardContent className="p-3 sm:p-4">
+                <APIKeyTokenUsagePanel />
+              </CardContent>
+            </Card>
+          )}
 
           <Card className="py-0">
             <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">

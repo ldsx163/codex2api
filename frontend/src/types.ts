@@ -528,6 +528,22 @@ export interface UsageAPIKeyStat {
   user_billed: number
 }
 
+// APIKeyTokenStat 是 /usage/api-keys 端点返回项，比 UsageAPIKeyStat 字段更细
+// （分列 input/output/cached token），且不限条数。
+export interface APIKeyTokenStat {
+  api_key_id: number
+  api_key_name: string
+  api_key_masked: string
+  label: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  error_count: number
+  user_billed: number
+}
+
 export interface UsageLog {
   id: number
   account_id: number

@@ -236,6 +236,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/event-trend", h.GetAccountEventTrend)
 	api.POST("/accounts/usage/probe", h.ForceUsageProbe)
 	api.GET("/usage/stats", h.GetUsageStats)
+	api.GET("/usage/api-keys", h.GetAPIKeyTokenStats)
 	api.GET("/usage/logs", h.GetUsageLogs)
 	api.GET("/usage/chart-data", h.GetChartData)
 	api.DELETE("/usage/logs", h.ClearUsageLogs)
@@ -2809,6 +2810,30 @@ func parseUsageStatsRange(startStr, endStr string) (time.Time, time.Time, error)
 		return time.Time{}, time.Time{}, fmt.Errorf("end 必须晚于 start")
 	}
 	return start, end, nil
+}
+
+// GetAPIKeyTokenStats 返回按 API Key 聚合的 token 用量列表（issue #162）。
+// 支持可选 query 参数 start/end (RFC3339)；缺省回落到"今日"。
+// 不分页/不限条数：前端做排序、搜索、分页。
+func (h *Handler) GetAPIKeyTokenStats(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 8*time.Second)
+	defer cancel()
+
+	rangeStart, rangeEnd, err := parseUsageStatsRange(c.Query("start"), c.Query("end"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	items, err := h.db.ListAPIKeyTokenStats(ctx, rangeStart, rangeEnd)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	if items == nil {
+		items = []database.APIKeyTokenStat{}
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
 }
 
 // GetChartData 返回图表聚合数据（服务端分桶 + 内存缓存）

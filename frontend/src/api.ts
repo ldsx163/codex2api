@@ -6,6 +6,7 @@ import type {
   AddOpenAIResponsesAccountRequest,
   AdminErrorResponse,
   APIKeysResponse,
+  APIKeyTokenStat,
   AccountsResponse,
   ChartAggregation,
   CreateAccountResponse,
@@ -282,6 +283,15 @@ export const api = {
     if (params.end) searchParams.set('end', params.end)
     const qs = searchParams.toString()
     return request<UsageStats>(qs ? `/usage/stats?${qs}` : '/usage/stats')
+  },
+  getAPIKeyTokenStats: (params: { start?: string; end?: string } = {}) => {
+    const searchParams = new URLSearchParams()
+    if (params.start) searchParams.set('start', params.start)
+    if (params.end) searchParams.set('end', params.end)
+    const qs = searchParams.toString()
+    return request<{ items: APIKeyTokenStat[] }>(
+      qs ? `/usage/api-keys?${qs}` : '/usage/api-keys',
+    )
   },
   getUsageLogs: (params: { start?: string; end?: string; limit?: number } = {}) => {
     const searchParams = new URLSearchParams()
