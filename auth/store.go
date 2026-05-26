@@ -2661,6 +2661,7 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 		bestPriority := -1
 		bestDispatchScore := -math.MaxFloat64
 		var bestLoad int64 = math.MaxInt64
+		var bestLimit int64
 		maxConcurrency := atomic.LoadInt64(&s.maxConcurrency)
 
 		for _, acc := range s.accounts {
@@ -2691,6 +2692,7 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 				bestPriority = priority
 				bestDispatchScore = dispatchScore
 				bestLoad = load
+				bestLimit = limit
 				best = acc
 			}
 		}
@@ -2702,10 +2704,9 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 		if s.accountHasCachedCooldown(best) {
 			continue
 		}
-		atomic.AddInt64(&best.ActiveRequests, 1)
-		atomic.AddInt64(&best.TotalRequests, 1)
-		atomic.StoreInt64(&best.LastUsedAt, time.Now().UnixNano())
-		return best
+		if tryAcquireAccount(best, bestLimit) {
+			return best
+		}
 	}
 	return nil
 }

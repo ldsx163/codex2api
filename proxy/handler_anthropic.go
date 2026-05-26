@@ -1,6 +1,8 @@
 package proxy
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -135,6 +137,13 @@ func (h *Handler) Messages(c *gin.Context) {
 	var lastBody []byte
 	excludeAccounts := make(map[int64]bool)
 
+	var lastUpstreamCancel context.CancelFunc
+	defer func() {
+		if lastUpstreamCancel != nil {
+			lastUpstreamCancel()
+		}
+	}()
+
 	for attempt := 0; ; attempt++ {
 		account, stickyProxyURL := h.nextAccountForSessionWithFilter(affinityKey, apiKeyID, excludeAccounts, accountFilter)
 		if account == nil {
@@ -173,10 +182,21 @@ func (h *Handler) Messages(c *gin.Context) {
 
 		downstreamHeaders := c.Request.Header.Clone()
 		upstreamSessionID := IsolateCodexSessionID(apiKeyID, sessionID)
-		resp, reqErr := ExecuteRequest(c.Request.Context(), account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
+		if lastUpstreamCancel != nil {
+			lastUpstreamCancel()
+		}
+		upstreamCtx, upstreamCancel := newDrainableUpstreamContext(c.Request.Context(), upstreamDrainTimeout)
+		lastUpstreamCancel = upstreamCancel
+		ttftGuard := newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
+		resp, reqErr := ExecuteRequest(upstreamCtx, account, codexBody, upstreamSessionID, proxyURL, apiKey, deviceCfg, downstreamHeaders, useWebsocket)
 		durationMs := int(time.Since(start).Milliseconds())
 
 		if reqErr != nil {
+			timedOut := ttftGuard.TimedOut()
+			ttftGuard.Stop()
+			if timedOut {
+				reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
+			}
 			if kind := classifyTransportFailure(reqErr); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
@@ -198,6 +218,7 @@ func (h *Handler) Messages(c *gin.Context) {
 		}
 
 		if resp.StatusCode != http.StatusOK {
+			ttftGuard.Stop()
 			if kind := classifyHTTPFailure(resp.StatusCode); kind != "" {
 				h.store.ReportRequestFailure(account, kind, time.Duration(durationMs)*time.Millisecond)
 			}
@@ -277,6 +298,7 @@ func (h *Handler) Messages(c *gin.Context) {
 
 			flusher, ok := c.Writer.(http.Flusher)
 			if !ok {
+				ttftGuard.Stop()
 				sendAnthropicError(c, http.StatusInternalServerError, "api_error", "Streaming not supported")
 				resp.Body.Close()
 				h.store.Release(account)
@@ -285,15 +307,18 @@ func (h *Handler) Messages(c *gin.Context) {
 
 			translator := newAnthropicStreamTranslator(originalModel)
 			streamWriter := newStreamFlushWriter(c.Writer, flusher)
+			var pendingFirstTokenEvents bytes.Buffer
 
 			readErr = ReadSSEStream(resp.Body, func(data []byte) bool {
 				parsed := gjson.ParseBytes(data)
 				eventType := parsed.Get("type").String()
 
 				// TTFT 跟踪
-				if !ttftRecorded && isFirstTokenEvent(eventType) {
+				isFirstToken := isFirstTokenEvent(eventType)
+				if !ttftRecorded && isFirstToken {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
+					ttftGuard.MarkEvent(eventType)
 				}
 
 				// 累计 delta 字符数
@@ -316,9 +341,25 @@ func (h *Handler) Messages(c *gin.Context) {
 
 				// 翻译并写入
 				events := translator.translateEvent(data)
-				for _, evt := range events {
-					sse := anthropicEventToSSE(evt)
-					if err := streamWriter.WriteString(sse); err != nil {
+				if len(events) > 0 {
+					var payload bytes.Buffer
+					for _, evt := range events {
+						payload.WriteString(anthropicEventToSSE(evt))
+					}
+					payloadString := payload.String()
+					shouldDefer := !ttftRecorded && !gotTerminal && !isFirstToken
+					if shouldDefer {
+						pendingFirstTokenEvents.WriteString(payloadString)
+						if pendingFirstTokenEvents.Len() <= 1024*1024 {
+							return eventType != "response.completed" && eventType != "response.failed"
+						}
+						payloadString = pendingFirstTokenEvents.String()
+						pendingFirstTokenEvents.Reset()
+					} else if pendingFirstTokenEvents.Len() > 0 {
+						payloadString = pendingFirstTokenEvents.String() + payloadString
+						pendingFirstTokenEvents.Reset()
+					}
+					if err := streamWriter.WriteString(payloadString); err != nil {
 						writeErr = err
 						return false
 					}
@@ -332,20 +373,17 @@ func (h *Handler) Messages(c *gin.Context) {
 			}
 
 			// 流结束后补齐事件
-			if writeErr == nil {
+			if writeErr == nil && !gotTerminal && ttftRecorded {
 				finalEvents := translator.finalize()
-				// 仅在 message_stop 未发送过时输出
-				if !gotTerminal {
-					for _, evt := range finalEvents {
-						sse := anthropicEventToSSE(evt)
-						if err := streamWriter.WriteString(sse); err != nil {
-							writeErr = err
-							break
-						}
+				for _, evt := range finalEvents {
+					sse := anthropicEventToSSE(evt)
+					if err := streamWriter.WriteString(sse); err != nil {
+						writeErr = err
+						break
 					}
-					if writeErr == nil {
-						writeErr = streamWriter.Flush()
-					}
+				}
+				if writeErr == nil {
+					writeErr = streamWriter.Flush()
 				}
 			}
 		} else {
@@ -362,6 +400,7 @@ func (h *Handler) Messages(c *gin.Context) {
 				if !ttftRecorded && isFirstTokenEvent(eventType) {
 					firstTokenMs = int(time.Since(start).Milliseconds())
 					ttftRecorded = true
+					ttftGuard.MarkEvent(eventType)
 				}
 				if eventType == "response.output_text.delta" || eventType == "response.function_call_arguments.delta" {
 					deltaCharCount += len(parsed.Get("delta").String())
@@ -394,6 +433,10 @@ func (h *Handler) Messages(c *gin.Context) {
 		// 断流检测 + token 估算
 		totalDuration := int(time.Since(start).Milliseconds())
 		outcome := classifyStreamOutcome(c.Request.Context().Err(), readErr, writeErr, gotTerminal)
+		if ttftGuard.TimedOut() && !ttftRecorded && !gotTerminal {
+			outcome = firstTokenTimeoutOutcome(currentFirstTokenTimeout())
+		}
+		ttftGuard.Stop()
 		if len(terminalFailurePayload) > 0 {
 			outcome = classifyResponseFailedOutcome(terminalFailurePayload)
 		}

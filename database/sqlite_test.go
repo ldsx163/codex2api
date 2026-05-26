@@ -551,6 +551,66 @@ func TestSQLiteUsageStatsBaselineHasBillingColumns(t *testing.T) {
 	}
 }
 
+func TestSQLiteSystemSettingsPersistsFirstTokenTimeoutSeconds(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+
+	db, err := New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("New(sqlite) 返回错误: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.UpdateSystemSettings(ctx, &SystemSettings{
+		SiteName:                         "CodexProxy",
+		MaxConcurrency:                   2,
+		GlobalRPM:                        0,
+		TestModel:                        "gpt-5.4",
+		TestConcurrency:                  50,
+		BackgroundRefreshIntervalMinutes: 2,
+		UsageProbeMaxAgeMinutes:          10,
+		UsageProbeConcurrency:            16,
+		RecoveryProbeIntervalMinutes:     30,
+		PgMaxConns:                       50,
+		RedisPoolSize:                    30,
+		MaxRetries:                       2,
+		MaxRateLimitRetries:              1,
+		ModelMapping:                     "{}",
+		PromptFilterMode:                 "monitor",
+		PromptFilterThreshold:            50,
+		PromptFilterStrictThreshold:      90,
+		PromptFilterLogMatches:           true,
+		PromptFilterMaxTextLength:        81920,
+		PromptFilterCustomPatterns:       "[]",
+		PromptFilterDisabledPatterns:     "[]",
+		ClientCompatMode:                 "preserve",
+		CodexMinCLIVersion:               "0.118.0",
+		UsageLogMode:                     "full",
+		UsageLogBatchSize:                200,
+		UsageLogFlushIntervalSeconds:     5,
+		StreamFlushPolicy:                "immediate",
+		StreamFlushIntervalMS:            20,
+		FirstTokenTimeoutSeconds:         17,
+		ImageStorageConfig:               "{}",
+		SchedulerMode:                    "round_robin",
+		AffinityMode:                     "bounded",
+		BackgroundConfig:                 "{}",
+	}); err != nil {
+		t.Fatalf("UpdateSystemSettings 返回错误: %v", err)
+	}
+
+	settings, err := db.GetSystemSettings(ctx)
+	if err != nil {
+		t.Fatalf("GetSystemSettings 返回错误: %v", err)
+	}
+	if settings == nil {
+		t.Fatal("GetSystemSettings 返回 nil")
+	}
+	if settings.FirstTokenTimeoutSeconds != 17 {
+		t.Fatalf("FirstTokenTimeoutSeconds = %d, want 17", settings.FirstTokenTimeoutSeconds)
+	}
+}
+
 func TestDeleteAccountGroupDoesNotBroadenScopedAPIKey(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 

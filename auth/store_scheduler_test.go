@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -278,6 +279,77 @@ func TestStoreNextPrefersHigherDispatchScoreWithinTier(t *testing.T) {
 	if got.DBID != premium.DBID {
 		t.Fatalf("Next() picked dbID=%d, want premium account %d", got.DBID, premium.DBID)
 	}
+}
+
+func TestStoreNextConcurrentAcquireDoesNotExceedDynamicLimit(t *testing.T) {
+	acc := &Account{
+		DBID:        1,
+		AccessToken: "token",
+		Status:      StatusReady,
+		PlanType:    "pro",
+	}
+	store := &Store{
+		accounts:       []*Account{acc},
+		maxConcurrency: 1,
+	}
+
+	const workers = 32
+	var entered int64
+	start := make(chan struct{})
+	filterGate := make(chan struct{})
+	results := make(chan *Account, workers)
+
+	filter := func(candidate *Account) bool {
+		if candidate != nil && candidate.DBID == acc.DBID {
+			atomic.AddInt64(&entered, 1)
+		}
+		<-filterGate
+		return true
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			results <- store.NextExcludingWithFilter(0, nil, filter)
+		}()
+	}
+	close(start)
+
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt64(&entered) < workers {
+		select {
+		case <-deadline:
+			close(filterGate)
+			t.Fatalf("only %d/%d workers reached the scheduler filter", atomic.LoadInt64(&entered), workers)
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+
+	acc.mu.Lock()
+	close(filterGate)
+	time.Sleep(20 * time.Millisecond)
+	acc.mu.Unlock()
+
+	wg.Wait()
+	close(results)
+
+	acquired := 0
+	for got := range results {
+		if got != nil {
+			acquired++
+		}
+	}
+	if acquired != 1 {
+		t.Fatalf("acquired accounts = %d, want 1", acquired)
+	}
+	if got := atomic.LoadInt64(&acc.ActiveRequests); got != 1 {
+		t.Fatalf("ActiveRequests = %d, want 1", got)
+	}
+	store.Release(acc)
 }
 
 func TestAccountPremium5hUrgencyBonusOnlyAffectsDispatchScore(t *testing.T) {
