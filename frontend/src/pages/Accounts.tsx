@@ -3074,6 +3074,7 @@ export default function Accounts() {
                                         getAccountRateLimitWindow(account) ??
                                         undefined
                                       }
+                                      errorMessage={account.error_message}
                                     />
                                     <AccountStatusCountdown account={account} />
                                   </div>
@@ -6124,6 +6125,7 @@ function AccountMobileCard({
               <StatusBadge
                 status={account.status}
                 detail={getAccountRateLimitWindow(account) ?? undefined}
+                errorMessage={account.error_message}
               />
             </div>
           </div>
