@@ -110,6 +110,23 @@ export interface AccountRow {
 
 export type AccountsResponse = ApiListResponse<'accounts', AccountRow>
 
+export interface RecycleBinAccountRow {
+  id: number
+  name: string
+  email: string
+  plan_type: string
+  at_only?: boolean
+  openai_responses_api?: boolean
+  base_url?: string
+  models?: string[]
+  created_at: ISODateString
+  deleted_at?: ISODateString
+  last_test_status?: string
+  last_test_at?: ISODateString
+}
+
+export type RecycleBinAccountsResponse = ApiListResponse<'accounts', RecycleBinAccountRow>
+
 export interface AddAccountRequest {
   name?: string
   refresh_token?: string

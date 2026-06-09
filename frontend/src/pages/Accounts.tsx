@@ -7,7 +7,10 @@ import Pagination from "../components/Pagination";
 import StateShell from "../components/StateShell";
 import StatusBadge from "../components/StatusBadge";
 import { useDataLoader, type LoadOptions } from "../hooks/useDataLoader";
-import { useConfirmDialog } from "../hooks/useConfirmDialog";
+import {
+  useConfirmDialog,
+  type ConfirmDialogOptions,
+} from "../hooks/useConfirmDialog";
 import {
   DEFAULT_PAGE_SIZE_OPTIONS,
   usePersistedPageSize,
@@ -23,6 +26,7 @@ import type {
   OpsOverviewResponse,
   AccountGroup,
   SystemSettings,
+  RecycleBinAccountRow,
 } from "../types";
 import { getErrorMessage } from "../utils/error";
 import { formatRelativeTime, formatBeijingTime } from "../utils/time";
@@ -77,6 +81,11 @@ import {
   SlidersHorizontal,
   LayoutGrid,
   Rows3,
+  Recycle,
+  ArchiveRestore,
+  ArrowLeft,
+  ToggleLeft,
+  ToggleRight,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AccountUsageModal from "../components/AccountUsageModal";
@@ -466,6 +475,7 @@ export default function Accounts() {
     | "abnormal"
     | "banned"
     | "error"
+    | "unsampled"
     | "disabled"
     | "locked"
   >("all");
@@ -557,6 +567,7 @@ export default function Accounts() {
   const [showAnalysisCharts, setShowAnalysisCharts] = useState(
     getInitialAnalysisVisibility,
   );
+  const [showRecycleBin, setShowRecycleBin] = useState(false);
   const [showEmailDomainTags, setShowEmailDomainTags] = useState(
     getInitialEmailDomainVisibility,
   );
@@ -1033,6 +1044,7 @@ export default function Accounts() {
         isRateLimitedAccount(account),
     ).length;
     const normalAccounts = accounts.length - abnormalAccounts - rateLimitedExclusive;
+    const unsampledAccounts = accounts.filter(isUnsampledQuotaAccount).length;
     return {
       totalAccounts: accounts.length,
       normalAccounts,
@@ -1042,6 +1054,7 @@ export default function Accounts() {
       abnormalAccounts,
       bannedAccounts,
       errorAccounts,
+      unsampledAccounts,
       disabledAccounts,
       lockedAccounts: accounts.filter((account) => account.locked).length,
       subscriptionAccountsToLock: accounts.filter(
@@ -1066,6 +1079,7 @@ export default function Accounts() {
     abnormalAccounts,
     bannedAccounts,
     errorAccounts,
+    unsampledAccounts,
     disabledAccounts,
     lockedAccounts,
     subscriptionAccountsToLock,
@@ -1137,6 +1151,9 @@ export default function Accounts() {
           break;
         case "error":
           if (account.status !== "error") return false;
+          break;
+        case "unsampled":
+          if (!isUnsampledQuotaAccount(account)) return false;
           break;
         case "disabled":
           if (account.enabled !== false) return false;
@@ -2768,6 +2785,15 @@ export default function Accounts() {
         errorTitle={t("accounts.errorTitle")}
       >
         <>
+          {showRecycleBin ? (
+            <RecycleBinView
+              onClose={() => setShowRecycleBin(false)}
+              onChanged={() => void reloadSilently()}
+              confirm={confirm}
+              runStreamingOperation={runStreamingAccountOperation}
+            />
+          ) : null}
+          <div className={showRecycleBin ? "hidden" : "contents"}>
           <PageHeader
             title={t("accounts.title")}
             description={t("accounts.description")}
@@ -2904,6 +2930,14 @@ export default function Accounts() {
                     },
                   ]}
                 />
+                <Button
+                  variant="outline"
+                  onClick={() => setShowRecycleBin(true)}
+                  className="max-sm:w-full"
+                >
+                  <Recycle className="size-3.5" />
+                  {t("accounts.recycleBin")}
+                </Button>
                 <Button onClick={() => setShowAdd(true)}>
                   <Plus className="size-3.5" />
                   {t("accounts.addAccount")}
@@ -3028,6 +3062,7 @@ export default function Accounts() {
                   ["abnormal", t("accounts.filterAbnormal")],
                   ["banned", t("accounts.filterBanned")],
                   ["error", t("accounts.filterError")],
+                  ["unsampled", t("accounts.filterUnsampled")],
                   ["disabled", t("accounts.filterDisabled")],
                   ["locked", t("accounts.filterLocked")],
                 ] as const
@@ -3057,9 +3092,11 @@ export default function Accounts() {
                             ? bannedAccounts
                             : key === "error"
                               ? errorAccounts
-                              : key === "disabled"
-                                ? disabledAccounts
-                                : lockedAccounts}
+                              : key === "unsampled"
+                                ? unsampledAccounts
+                                : key === "disabled"
+                                  ? disabledAccounts
+                                  : lockedAccounts}
                 </button>
               ))}
             </div>
@@ -5710,6 +5747,7 @@ export default function Accounts() {
               )}
             </div>
           </Modal>
+          </div>
 
           {confirmDialog}
         </>
@@ -5727,6 +5765,790 @@ function downloadBlob(blob: Blob, filename: string) {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+function RecycleBinView({
+  onClose,
+  onChanged,
+  confirm,
+  runStreamingOperation,
+}: {
+  onClose: () => void;
+  onChanged: () => void;
+  confirm: (options: ConfirmDialogOptions) => Promise<boolean>;
+  runStreamingOperation: (
+    path: string,
+    body: unknown,
+    title: string,
+  ) => Promise<BatchOperationEvent | null>;
+}) {
+  const { t } = useTranslation();
+  const { showToast } = useToast();
+  const [rows, setRows] = useState<RecycleBinAccountRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [actingId, setActingId] = useState<number | null>(null);
+  const [batchActing, setBatchActing] = useState(false);
+  const [batchTesting, setBatchTesting] = useState(false);
+  const [emptying, setEmptying] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [testingRow, setTestingRow] = useState<RecycleBinAccountRow | null>(
+    null,
+  );
+  const [planFilter, setPlanFilter] = useState<
+    "all" | "pro" | "prolite" | "plus" | "team" | "free" | "api" | "unknown"
+  >("all");
+  const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
+  const [emptyConfirmText, setEmptyConfirmText] = useState("");
+  const [autoRestore, setAutoRestore] = useState(() => {
+    try {
+      return (
+        window.localStorage.getItem(RECYCLE_BIN_AUTO_RESTORE_KEY) === "1"
+      );
+    } catch {
+      return false;
+    }
+  });
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = usePersistedPageSize(
+    "recycle-bin",
+    20,
+    DEFAULT_PAGE_SIZE_OPTIONS,
+  );
+
+  const busy = batchActing || emptying || batchTesting;
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const resp = await api.getRecycleBinAccounts();
+      const next = resp.accounts ?? [];
+      setRows(next);
+      const validIds = new Set(next.map((row) => row.id));
+      setSelectedIds(
+        (prev) => new Set([...prev].filter((id) => validIds.has(id))),
+      );
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const stats = useMemo(() => {
+    const relay = rows.filter((row) => row.openai_responses_api).length;
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const recent24h = rows.filter((row) => {
+      if (!row.deleted_at) return false;
+      const ts = new Date(row.deleted_at).getTime();
+      return Number.isFinite(ts) && ts >= dayAgo;
+    }).length;
+    const planCounts = new Map<string, number>();
+    for (const row of rows) {
+      const plan =
+        (row.plan_type || "").trim() || t("accounts.recycleBinPlanUnknown");
+      planCounts.set(plan, (planCounts.get(plan) ?? 0) + 1);
+    }
+    const plans = [...planCounts.entries()].sort((a, b) => b[1] - a[1]);
+    return {
+      total: rows.length,
+      oauth: rows.length - relay,
+      relay,
+      recent24h,
+      plans,
+    };
+  }, [rows, t]);
+
+  const planDetailItems = useMemo(
+    () => stats.plans.map(([label, value]) => ({ label, value })),
+    [stats.plans],
+  );
+
+  const filteredRows = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (planFilter !== "all") {
+        const plan = (row.plan_type || "").toLowerCase().trim();
+        if (planFilter === "unknown") {
+          if (plan !== "") return false;
+        } else if (plan !== planFilter) {
+          return false;
+        }
+      }
+      if (!keyword) return true;
+      return [row.email, row.name, row.base_url, row.plan_type]
+        .filter(Boolean)
+        .some((field) => String(field).toLowerCase().includes(keyword));
+    });
+  }, [rows, search, planFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedRows = useMemo(
+    () =>
+      filteredRows.slice(
+        (currentPage - 1) * pageSize,
+        currentPage * pageSize,
+      ),
+    [filteredRows, currentPage, pageSize],
+  );
+
+  useEffect(() => {
+    setPage(1);
+  }, [search, planFilter]);
+
+  const allPageSelected =
+    pagedRows.length > 0 && pagedRows.every((row) => selectedIds.has(row.id));
+
+  const toggleSelect = (id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        pagedRows.forEach((row) => next.delete(row.id));
+      } else {
+        pagedRows.forEach((row) => next.add(row.id));
+      }
+      return next;
+    });
+  };
+
+  const handleRestore = async (row: RecycleBinAccountRow) => {
+    setActingId(row.id);
+    try {
+      await api.restoreAccount(row.id);
+      showToast(t("accounts.recycleBinRestored"));
+      void load();
+      onChanged();
+    } catch (err) {
+      showToast(getErrorMessage(err), "error");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handlePurge = async (row: RecycleBinAccountRow) => {
+    const confirmed = await confirm({
+      title: t("accounts.recycleBinPurgeTitle"),
+      description: t("accounts.recycleBinPurgeDesc", {
+        account: row.email || row.name || `ID ${row.id}`,
+      }),
+      confirmText: t("accounts.recycleBinPurge"),
+      tone: "destructive",
+      confirmVariant: "destructive",
+    });
+    if (!confirmed) return;
+    setActingId(row.id);
+    try {
+      await api.purgeAccount(row.id);
+      showToast(t("accounts.recycleBinPurged"));
+      void load();
+    } catch (err) {
+      showToast(getErrorMessage(err), "error");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleBatchRestore = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBatchActing(true);
+    let success = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await api.restoreAccount(id);
+        success++;
+      } catch {
+        failed++;
+      }
+    }
+    setBatchActing(false);
+    if (failed > 0) {
+      showToast(
+        `${t("accounts.recycleBinBatchRestored", { count: success })} · ${t("accounts.recycleBinBatchFailed", { count: failed })}`,
+        "error",
+      );
+    } else {
+      showToast(t("accounts.recycleBinBatchRestored", { count: success }));
+    }
+    void load();
+    onChanged();
+  };
+
+  const handleBatchPurge = async () => {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    const confirmed = await confirm({
+      title: t("accounts.recycleBinPurgeSelectedTitle"),
+      description: t("accounts.recycleBinPurgeSelectedDesc", {
+        count: ids.length,
+      }),
+      confirmText: t("accounts.recycleBinPurgeSelected"),
+      tone: "destructive",
+      confirmVariant: "destructive",
+    });
+    if (!confirmed) return;
+    setBatchActing(true);
+    let success = 0;
+    let failed = 0;
+    for (const id of ids) {
+      try {
+        await api.purgeAccount(id);
+        success++;
+      } catch {
+        failed++;
+      }
+    }
+    setBatchActing(false);
+    if (failed > 0) {
+      showToast(
+        `${t("accounts.recycleBinBatchPurged", { count: success })} · ${t("accounts.recycleBinBatchFailed", { count: failed })}`,
+        "error",
+      );
+    } else {
+      showToast(t("accounts.recycleBinBatchPurged", { count: success }));
+    }
+    void load();
+  };
+
+  const toggleAutoRestore = () => {
+    setAutoRestore((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(
+          RECYCLE_BIN_AUTO_RESTORE_KEY,
+          next ? "1" : "0",
+        );
+      } catch {
+        /* localStorage 不可用时仅保留会话内状态 */
+      }
+      return next;
+    });
+  };
+
+  const handleBatchTestRun = async (ids?: number[]) => {
+    if (ids && ids.length === 0) return;
+    setBatchTesting(true);
+    try {
+      const result = await runStreamingOperation(
+        "/accounts/recycle-bin/batch-test?stream=true",
+        { ...(ids ? { ids } : {}), restore_on_success: autoRestore },
+        t("accounts.recycleBinBatchTestProgressTitle"),
+      );
+      showToast(
+        t("accounts.batchTestDone", {
+          success: result?.success ?? 0,
+          banned: result?.banned ?? 0,
+          rateLimited: result?.rate_limited ?? 0,
+          failed: result?.failed ?? 0,
+        }),
+      );
+    } catch (error) {
+      showToast(
+        t("accounts.batchTestFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    } finally {
+      setBatchTesting(false);
+      void load();
+      if (autoRestore) {
+        onChanged();
+      }
+    }
+  };
+
+  const emptyKeyword = t("accounts.recycleBinEmptyKeyword");
+  const emptyConfirmMatched = emptyConfirmText.trim() === emptyKeyword;
+
+  const openEmptyConfirm = () => {
+    setEmptyConfirmText("");
+    setShowEmptyConfirm(true);
+  };
+
+  const handleEmpty = async () => {
+    if (!emptyConfirmMatched) return;
+    setShowEmptyConfirm(false);
+    setEmptying(true);
+    try {
+      await api.emptyRecycleBin();
+      showToast(t("accounts.recycleBinEmptied"));
+      void load();
+    } catch (err) {
+      showToast(getErrorMessage(err), "error");
+    } finally {
+      setEmptying(false);
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        title={t("accounts.recycleBinTitle")}
+        description={t("accounts.recycleBinDesc")}
+        onRefresh={() => void load()}
+        actions={
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            <Button
+              variant="outline"
+              onClick={onClose}
+              className="max-sm:w-full"
+            >
+              <ArrowLeft className="size-3.5" />
+              {t("accounts.recycleBinBack")}
+            </Button>
+            <Button
+              variant="outline"
+              aria-pressed={autoRestore}
+              onClick={toggleAutoRestore}
+              className="max-sm:w-full"
+              title={t("accounts.recycleBinAutoRestoreHint")}
+            >
+              {autoRestore ? (
+                <ToggleRight className="size-4 text-emerald-500" />
+              ) : (
+                <ToggleLeft className="size-4 text-muted-foreground" />
+              )}
+              {t("accounts.recycleBinAutoRestore")}
+            </Button>
+            <Button
+              variant="outline"
+              disabled={busy || loading || rows.length === 0}
+              onClick={() => void handleBatchTestRun()}
+              className="max-sm:w-full"
+            >
+              <FlaskConical
+                className={`size-3.5 ${batchTesting ? "animate-pulse" : ""}`}
+              />
+              {batchTesting
+                ? t("accounts.batchTesting")
+                : t("accounts.recycleBinTestAll")}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={busy || loading || rows.length === 0}
+              onClick={openEmptyConfirm}
+              className="max-sm:w-full"
+            >
+              <Trash2 className="size-3.5" />
+              {t("accounts.recycleBinEmptyBin")}
+            </Button>
+          </div>
+        }
+      />
+
+      <div className="mb-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <CompactStat
+          label={t("accounts.recycleBinStatTotal")}
+          value={stats.total}
+          tone="neutral"
+          details={[
+            { label: t("accounts.recycleBinTypeOauth"), value: stats.oauth },
+            { label: t("accounts.recycleBinTypeRelay"), value: stats.relay },
+          ]}
+        />
+        <CompactStat
+          label={t("accounts.recycleBinStatPlans")}
+          value={stats.plans.length}
+          tone="success"
+          details={planDetailItems}
+        />
+        <CompactStat
+          label={t("accounts.recycleBinStatRecent24h")}
+          value={stats.recent24h}
+          tone="danger"
+        />
+      </div>
+
+      <Card>
+        <CardContent className="p-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative w-full sm:w-72">
+                <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder={t("accounts.recycleBinSearchPlaceholder")}
+                  className="pl-8"
+                />
+              </div>
+              <div className="flex shrink-0 items-center gap-1 rounded-lg border border-border bg-muted/30 p-0.5 max-sm:w-full max-sm:flex-wrap">
+                {(
+                  [
+                    "all",
+                    "pro",
+                    "prolite",
+                    "plus",
+                    "team",
+                    "free",
+                    "api",
+                    "unknown",
+                  ] as const
+                ).map((key) => (
+                  <button
+                    key={key}
+                    onClick={() => setPlanFilter(key)}
+                    className={`whitespace-nowrap rounded-md px-2.5 py-1 text-[12px] font-medium transition-colors ${
+                      planFilter === key
+                        ? "bg-background shadow-sm text-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    {key === "all"
+                      ? t("accounts.filterAll")
+                      : key === "unknown"
+                        ? t("accounts.recycleBinPlanUnknown")
+                        : key === "prolite"
+                          ? "ProLite"
+                          : key === "api"
+                            ? "API"
+                            : key.charAt(0).toUpperCase() + key.slice(1)}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {selectedIds.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-muted-foreground">
+                  {t("accounts.recycleBinSelected", {
+                    count: selectedIds.size,
+                  })}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void handleBatchTestRun([...selectedIds])}
+                >
+                  <FlaskConical className="size-3.5" />
+                  {t("accounts.recycleBinTestSelected")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void handleBatchRestore()}
+                >
+                  <ArchiveRestore className="size-3.5" />
+                  {t("accounts.recycleBinRestoreSelected")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="destructive"
+                  disabled={busy}
+                  onClick={() => void handleBatchPurge()}
+                >
+                  <Trash2 className="size-3.5" />
+                  {t("accounts.recycleBinPurgeSelected")}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+
+          {loading ? (
+            <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+              {t("common.loading")}
+            </div>
+          ) : error ? (
+            <div className="px-6 py-10 text-center text-sm text-destructive">
+              {error}
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+              {t("accounts.recycleBinEmptyState")}
+            </div>
+          ) : filteredRows.length === 0 ? (
+            <div className="px-6 py-10 text-center text-sm text-muted-foreground">
+              {t("accounts.recycleBinNoMatch")}
+            </div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10">
+                        <input
+                          type="checkbox"
+                          className="size-4 cursor-pointer accent-primary"
+                          checked={allPageSelected}
+                          onChange={toggleSelectAll}
+                        />
+                      </TableHead>
+                      <TableHead className="w-14">
+                        {t("accounts.sequence")}
+                      </TableHead>
+                      <TableHead>{t("accounts.recycleBinAccount")}</TableHead>
+                      <TableHead>{t("accounts.recycleBinPlan")}</TableHead>
+                      <TableHead>{t("accounts.recycleBinType")}</TableHead>
+                      <TableHead>
+                        {t("accounts.recycleBinImportedAt")}
+                      </TableHead>
+                      <TableHead>
+                        {t("accounts.recycleBinDeletedAt")}
+                      </TableHead>
+                      <TableHead>{t("accounts.recycleBinLastTest")}</TableHead>
+                      <TableHead className="text-right">
+                        {t("accounts.recycleBinActions")}
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {pagedRows.map((row, index) => (
+                      <TableRow key={row.id}>
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            className="size-4 cursor-pointer accent-primary"
+                            checked={selectedIds.has(row.id)}
+                            onChange={() => toggleSelect(row.id)}
+                          />
+                        </TableCell>
+                        <TableCell className="tabular-nums text-muted-foreground">
+                          {(currentPage - 1) * pageSize + index + 1}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-medium">
+                              {row.email || row.name || `ID ${row.id}`}
+                            </span>
+                            {row.openai_responses_api && row.base_url ? (
+                              <span className="text-xs text-muted-foreground">
+                                {row.base_url}
+                              </span>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">
+                            {row.plan_type?.trim() ||
+                              t("accounts.recycleBinPlanUnknown")}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="secondary">
+                            {row.openai_responses_api
+                              ? t("accounts.recycleBinTypeRelay")
+                              : t("accounts.recycleBinTypeOauth")}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-col gap-0.5">
+                            <span className="text-sm tabular-nums">
+                              {formatBeijingTime(row.created_at)}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {formatRelativeTime(row.created_at)}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {row.deleted_at ? (
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-sm tabular-nums">
+                                {formatBeijingTime(row.deleted_at)}
+                              </span>
+                              <span className="text-xs text-muted-foreground">
+                                {formatRelativeTime(row.deleted_at)}
+                              </span>
+                            </div>
+                          ) : (
+                            "-"
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {(() => {
+                            const st = row.last_test_status;
+                            if (!st) {
+                              return (
+                                <span className="text-muted-foreground">
+                                  -
+                                </span>
+                              );
+                            }
+                            const passed = st === "success";
+                            const limited = st === "rate_limited";
+                            const badgeClass = passed
+                              ? "border-emerald-300 text-emerald-600 dark:border-emerald-800 dark:text-emerald-400"
+                              : limited
+                                ? "border-amber-300 text-amber-600 dark:border-amber-800 dark:text-amber-400"
+                                : "border-red-300 text-red-600 dark:border-red-900 dark:text-red-400";
+                            const label = passed
+                              ? t("accounts.recycleBinTestPassed")
+                              : limited
+                                ? t("accounts.recycleBinTestRateLimited")
+                                : t("accounts.recycleBinTestFailedLabel");
+                            return (
+                              <div className="flex flex-col items-start gap-0.5">
+                                <Badge variant="outline" className={badgeClass}>
+                                  {label}
+                                </Badge>
+                                {row.last_test_at ? (
+                                  <span className="text-xs tabular-nums text-muted-foreground">
+                                    {formatBeijingTime(row.last_test_at)}
+                                  </span>
+                                ) : null}
+                              </div>
+                            );
+                          })()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={actingId === row.id || busy}
+                              onClick={() => setTestingRow(row)}
+                            >
+                              <FlaskConical className="size-3.5" />
+                              {t("accounts.recycleBinTest")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={actingId === row.id || busy}
+                              onClick={() => void handleRestore(row)}
+                            >
+                              <ArchiveRestore className="size-3.5" />
+                              {t("accounts.recycleBinRestore")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              disabled={actingId === row.id || busy}
+                              onClick={() => void handlePurge(row)}
+                            >
+                              <Trash2 className="size-3.5" />
+                              {t("accounts.recycleBinPurge")}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+              <div className="border-t border-border px-4 py-3">
+                <Pagination
+                  page={currentPage}
+                  totalPages={totalPages}
+                  onPageChange={setPage}
+                  totalItems={filteredRows.length}
+                  pageSize={pageSize}
+                  pageSizeOptions={DEFAULT_PAGE_SIZE_OPTIONS}
+                  onPageSizeChange={(nextPageSize) => {
+                    setPageSize(nextPageSize);
+                    setPage(1);
+                  }}
+                />
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {testingRow ? (
+        <TestConnectionModal
+          account={recycleBinRowToAccountRow(testingRow)}
+          onSettled={() => {
+            void load();
+            if (autoRestore) {
+              onChanged();
+            }
+          }}
+          onClose={() => setTestingRow(null)}
+          successHint={
+            autoRestore
+              ? t("accounts.recycleBinTestAutoRestoredHint")
+              : t("accounts.recycleBinTestSuccessHint")
+          }
+          restoreOnSuccess={autoRestore}
+        />
+      ) : null}
+
+      <Modal
+        show={showEmptyConfirm}
+        title={t("accounts.recycleBinEmptyTitle")}
+        onClose={() => setShowEmptyConfirm(false)}
+        footer={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setShowEmptyConfirm(false)}
+            >
+              {t("common.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={!emptyConfirmMatched || busy}
+              onClick={() => void handleEmpty()}
+            >
+              <Trash2 className="size-3.5" />
+              {t("accounts.recycleBinEmptyBin")}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            {t("accounts.recycleBinEmptyConfirmPrompt", {
+              count: rows.length,
+            })}
+          </p>
+          <p className="text-sm">
+            {t("accounts.recycleBinEmptyTypeToConfirm")}
+            <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-semibold text-destructive">
+              {emptyKeyword}
+            </code>
+          </p>
+          <Input
+            value={emptyConfirmText}
+            onChange={(e) => setEmptyConfirmText(e.target.value)}
+            placeholder={emptyKeyword}
+            autoFocus
+          />
+        </div>
+      </Modal>
+    </>
+  );
+}
+
+const RECYCLE_BIN_AUTO_RESTORE_KEY = "codex2api_recycle_bin_auto_restore";
+
+// recycleBinRowToAccountRow 将回收站行转换为 TestConnectionModal 需要的最小 AccountRow。
+function recycleBinRowToAccountRow(row: RecycleBinAccountRow): AccountRow {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    plan_type: row.plan_type,
+    status: "deleted",
+    openai_responses_api: row.openai_responses_api,
+    base_url: row.base_url,
+    models: row.models,
+    proxy_url: "",
+    created_at: row.created_at,
+    updated_at: row.deleted_at || row.created_at,
+  };
 }
 
 function formatJSONText(text: string) {
@@ -6131,6 +6953,15 @@ type RateLimitWindow = "5h" | "7d";
 
 function isRateLimitedAccount(account: AccountRow): boolean {
   return getAccountRateLimitWindow(account) !== null;
+}
+
+function isUnsampledQuotaAccount(account: AccountRow): boolean {
+  const status = (account.status || "").toLowerCase();
+  if (status === "unauthorized" || account.openai_responses_api) {
+    return false;
+  }
+  const value = account.usage_percent_7d;
+  return typeof value !== "number" || !Number.isFinite(value);
 }
 
 function getAccountRateLimitWindow(
@@ -7374,10 +8205,14 @@ function TestConnectionModal({
   account,
   onClose,
   onSettled,
+  successHint,
+  restoreOnSuccess,
 }: {
   account: AccountRow;
   onClose: () => void;
   onSettled: () => void;
+  successHint?: string;
+  restoreOnSuccess?: boolean;
 }) {
   const { t } = useTranslation();
   const [output, setOutput] = useState<string[]>([]);
@@ -7498,6 +8333,9 @@ function TestConnectionModal({
 
       try {
         const params = new URLSearchParams({ model: selectedModel });
+        if (restoreOnSuccess) {
+          params.set("restore_on_success", "true");
+        }
         const res = await fetch(
           `/api/admin/accounts/${account.id}/test?${params.toString()}`,
           {
@@ -7610,7 +8448,14 @@ function TestConnectionModal({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [account.id, markSettled, modelOptionsReady, selectedModel, t]);
+  }, [
+    account.id,
+    markSettled,
+    modelOptionsReady,
+    restoreOnSuccess,
+    selectedModel,
+    t,
+  ]);
 
   useEffect(() => {
     outputEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -7706,7 +8551,7 @@ function TestConnectionModal({
         {status === "success" && (
           <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-700 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-400">
             <RotateCcw className="size-4 shrink-0" />
-            {t("accounts.testAutoReset")}
+            {successHint ?? t("accounts.testAutoReset")}
           </div>
         )}
       </div>

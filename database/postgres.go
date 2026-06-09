@@ -40,6 +40,7 @@ type AccountRow struct {
 	Tags                    []string
 	CreatedAt               time.Time
 	UpdatedAt               time.Time
+	DeletedAt               sql.NullTime
 }
 
 type AccountModelCooldownRow struct {
@@ -3784,10 +3785,24 @@ func (db *DB) ClearExpiredModelCooldowns(ctx context.Context) error {
 
 // GetAccountByID 获取未删除账号的完整数据库行。
 func (db *DB) GetAccountByID(ctx context.Context, id int64) (*AccountRow, error) {
+	return db.getAccountByID(ctx, id, false)
+}
+
+// GetAccountByIDIncludingDeleted 获取账号（包含回收站中的已删除账号），
+// 用于回收站测试连接等不依赖运行时池的场景。
+func (db *DB) GetAccountByIDIncludingDeleted(ctx context.Context, id int64) (*AccountRow, error) {
+	return db.getAccountByID(ctx, id, true)
+}
+
+func (db *DB) getAccountByID(ctx context.Context, id int64, includeDeleted bool) (*AccountRow, error) {
+	deletedFilter := "AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'"
+	if includeDeleted {
+		deletedFilter = ""
+	}
 	query := `
 		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), created_at, updated_at
 		FROM accounts
-		WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'
+		WHERE id = $1 ` + deletedFilter + `
 		LIMIT 1
 	`
 	a := &AccountRow{}
@@ -4352,6 +4367,129 @@ func (db *DB) SoftDeleteAccount(ctx context.Context, id int64) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// ListDeleted 获取回收站中的账号（被软删除、尚未彻底清除的账号）。
+func (db *DB) ListDeleted(ctx context.Context) ([]*AccountRow, error) {
+	query := `
+		SELECT id, name, platform, type, credentials, proxy_url, status, cooldown_reason, cooldown_until, error_message, COALESCE(enabled, true), COALESCE(locked, false), COALESCE(credit_enabled, false), COALESCE(credit_skip_usage_window, false), COALESCE(skip_warm_tier, false), score_bias_override, base_concurrency_override, COALESCE(tags, '[]'), created_at, updated_at, deleted_at
+		FROM accounts
+		WHERE status = 'deleted' OR COALESCE(error_message, '') = 'deleted'
+		ORDER BY deleted_at DESC, id DESC
+	`
+	rows, err := db.conn.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("查询回收站账号失败: %w", err)
+	}
+	defer rows.Close()
+
+	var accounts []*AccountRow
+	for rows.Next() {
+		a := &AccountRow{}
+		var credRaw interface{}
+		var cooldownUntilRaw interface{}
+		var tagsRaw interface{}
+		var createdAtRaw interface{}
+		var updatedAtRaw interface{}
+		var deletedAtRaw interface{}
+		if err := rows.Scan(
+			&a.ID,
+			&a.Name,
+			&a.Platform,
+			&a.Type,
+			&credRaw,
+			&a.ProxyURL,
+			&a.Status,
+			&a.CooldownReason,
+			&cooldownUntilRaw,
+			&a.ErrorMessage,
+			&a.Enabled,
+			&a.Locked,
+			&a.CreditEnabled,
+			&a.CreditSkipUsageWindow,
+			&a.SkipWarmTier,
+			&a.ScoreBiasOverride,
+			&a.BaseConcurrencyOverride,
+			&tagsRaw,
+			&createdAtRaw,
+			&updatedAtRaw,
+			&deletedAtRaw,
+		); err != nil {
+			return nil, fmt.Errorf("扫描回收站账号行失败: %w", err)
+		}
+		a.Credentials = decodeCredentials(credRaw)
+		a.Tags = decodeTagsValue(tagsRaw)
+		a.CooldownUntil, err = parseDBNullTimeValue(cooldownUntilRaw)
+		if err != nil {
+			return nil, fmt.Errorf("解析 cooldown_until 失败: %w", err)
+		}
+		a.CreatedAt, err = parseDBTimeValue(createdAtRaw)
+		if err != nil {
+			return nil, fmt.Errorf("解析 created_at 失败: %w", err)
+		}
+		a.UpdatedAt, err = parseDBTimeValue(updatedAtRaw)
+		if err != nil {
+			return nil, fmt.Errorf("解析 updated_at 失败: %w", err)
+		}
+		a.DeletedAt, err = parseDBNullTimeValue(deletedAtRaw)
+		if err != nil {
+			return nil, fmt.Errorf("解析 deleted_at 失败: %w", err)
+		}
+		accounts = append(accounts, a)
+	}
+	return accounts, rows.Err()
+}
+
+// RestoreAccount 将回收站中的账号恢复为 active 状态。
+func (db *DB) RestoreAccount(ctx context.Context, id int64) error {
+	query := `
+		UPDATE accounts
+		SET status = 'active',
+			error_message = '',
+			cooldown_reason = '',
+			cooldown_until = NULL,
+			deleted_at = NULL,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1 AND (status = 'deleted' OR COALESCE(error_message, '') = 'deleted')
+	`
+	res, err := db.conn.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// PurgeAccount 从回收站彻底删除账号（物理删除，不可恢复）。
+func (db *DB) PurgeAccount(ctx context.Context, id int64) error {
+	query := `DELETE FROM accounts WHERE id = $1 AND (status = 'deleted' OR COALESCE(error_message, '') = 'deleted')`
+	res, err := db.conn.ExecContext(ctx, query, id)
+	if err != nil {
+		return err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// PurgeDeletedAccounts 清空回收站，返回被彻底删除的账号数量。
+func (db *DB) PurgeDeletedAccounts(ctx context.Context) (int64, error) {
+	res, err := db.conn.ExecContext(ctx, `DELETE FROM accounts WHERE status = 'deleted' OR COALESCE(error_message, '') = 'deleted'`)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // BatchSoftDeleteAccounts 批量软删除账号，分批执行避免 SQL 参数过多。

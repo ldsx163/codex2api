@@ -32,6 +32,7 @@ import type {
   PromptFilterLogsResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
+  RecycleBinAccountsResponse,
   RuntimeStatusResponse,
   ResetRadarResponse,
   SiteBranding,
@@ -207,6 +208,17 @@ export const api = {
     request<MessageResponse>(`/accounts/${id}/openai-responses`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAccount: (id: number) =>
     request<MessageResponse>(`/accounts/${id}`, { method: 'DELETE' }),
+  getRecycleBinAccounts: () =>
+    request<RecycleBinAccountsResponse>('/accounts/recycle-bin'),
+  restoreAccount: (id: number) =>
+    request<MessageResponse>(`/accounts/${id}/restore`, { method: 'POST' }),
+  purgeAccount: (id: number) =>
+    request<MessageResponse>(`/accounts/${id}/purge`, { method: 'DELETE' }),
+  emptyRecycleBin: () =>
+    request<{ message: string; purged: number }>('/accounts/recycle-bin', {
+      method: 'DELETE',
+      body: JSON.stringify({ confirm: 'EMPTY-RECYCLE-BIN' }),
+    }),
   refreshAccount: (id: number) =>
     request<MessageResponse>(`/accounts/${id}/refresh`, { method: 'POST' }),
   forceUsageProbe: () =>

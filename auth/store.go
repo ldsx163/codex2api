@@ -2617,135 +2617,10 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 	}
 
 	for _, row := range rows {
-		rt := row.GetCredential("refresh_token")
-		st := row.GetCredential("session_token")
-		at := row.GetCredential("access_token")
-		upstreamType := row.GetCredential("upstream_type")
-		baseURL := row.GetCredential("base_url")
-		apiKey := row.GetCredential("api_key")
-		models := normalizeModelList(row.GetCredentialStringSlice("models"))
-		isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenAIResponses) && strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
-		if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount {
-			log.Printf("[账号 %d] 缺少 refresh_token、session_token 和 access_token，跳过", row.ID)
+		account := s.buildAccountFromRow(ctx, row, modelCooldowns)
+		if account == nil {
 			continue
 		}
-
-		account := &Account{
-			DBID:         row.ID,
-			RefreshToken: rt,
-			SessionToken: st,
-			ProxyURL:     strings.TrimSpace(row.ProxyURL),
-			HealthTier:   HealthTierWarm,
-			AddedAt:      row.CreatedAt.UnixNano(),
-			UpstreamType: upstreamType,
-			BaseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-			APIKey:       strings.TrimSpace(apiKey),
-			Models:       models,
-		}
-		if isOpenAIResponsesAccount {
-			account.HealthTier = HealthTierHealthy
-			if account.PlanType == "" {
-				account.PlanType = "api"
-			}
-		}
-		account.ScoreBiasOverride = reflectOptionalInt64Field(row, "ScoreBiasOverride")
-		account.BaseConcurrencyOverride = reflectOptionalInt64Field(row, "BaseConcurrencyOverride")
-		account.setAllowedAPIKeyIDsLocked(row.GetCredentialInt64Slice("allowed_api_key_ids"))
-		account.Tags = cloneStringSlice(row.Tags)
-		if row.Locked {
-			atomic.StoreInt32(&account.Locked, 1)
-		}
-		if !row.Enabled {
-			atomic.StoreInt32(&account.DispatchPaused, 1)
-		}
-		account.CreditEnabled = row.CreditEnabled
-		account.CreditSkipUsageWindow = row.CreditSkipUsageWindow
-		account.SkipWarmTier = row.SkipWarmTier
-		if row.Status == "error" {
-			account.Status = StatusError
-			account.ErrorMsg = row.ErrorMessage
-			account.HealthTier = HealthTierRisky
-		}
-
-		// 尝试从 credentials 恢复已有的 AT
-		if at != "" {
-			account.AccessToken = at
-			account.AccountID = row.GetCredential("account_id")
-			account.Email = row.GetCredential("email")
-			account.PlanType = row.GetCredential("plan_type")
-			if account.Status != StatusError {
-				account.HealthTier = HealthTierHealthy
-			}
-			if expiresAt := row.GetCredential("expires_at"); expiresAt != "" {
-				if parsed, err := time.Parse(time.RFC3339, expiresAt); err == nil {
-					account.ExpiresAt = parsed
-				} else {
-					log.Printf("[账号 %d] 解析 expires_at 失败: %v", row.ID, err)
-				}
-			}
-		}
-		if subExp := row.GetCredential("subscription_expires_at"); subExp != "" {
-			if parsed, err := time.Parse(time.RFC3339, subExp); err == nil {
-				account.SubscriptionExpiresAt = parsed
-			}
-		}
-		if row.CooldownUntil.Valid {
-			if time.Now().Before(row.CooldownUntil.Time) {
-				account.SetCooldownUntil(row.CooldownUntil.Time, row.CooldownReason)
-			} else if row.CooldownReason != "" {
-				if err := s.db.ClearCooldown(ctx, row.ID); err != nil {
-					log.Printf("[账号 %d] 清理过期冷却状态失败: %v", row.ID, err)
-				}
-			}
-		}
-		if usagePct := row.GetCredential("codex_7d_used_percent"); usagePct != "" {
-			if parsed, err := strconv.ParseFloat(usagePct, 64); err == nil {
-				updatedAt := time.Time{}
-				if usageUpdatedAt := row.GetCredential("codex_usage_updated_at"); usageUpdatedAt != "" {
-					if parsedTime, err := time.Parse(time.RFC3339, usageUpdatedAt); err == nil {
-						updatedAt = parsedTime
-					} else {
-						log.Printf("[账号 %d] 解析 codex_usage_updated_at 失败: %v", row.ID, err)
-					}
-				}
-				account.SetUsageSnapshot(parsed, updatedAt)
-				// 恢复 7d 重置时间
-				if resetAt := row.GetCredential("codex_7d_reset_at"); resetAt != "" {
-					if t, err := time.Parse(time.RFC3339, resetAt); err == nil {
-						account.SetReset7dAt(t)
-					}
-				}
-			} else {
-				log.Printf("[账号 %d] 解析 codex_7d_used_percent 失败: %v", row.ID, err)
-			}
-		}
-		// 恢复 5h 用量快照
-		if usagePct5h := row.GetCredential("codex_5h_used_percent"); usagePct5h != "" {
-			if parsed, err := strconv.ParseFloat(usagePct5h, 64); err == nil {
-				resetAt := time.Time{}
-				if r := row.GetCredential("codex_5h_reset_at"); r != "" {
-					if t, err := time.Parse(time.RFC3339, r); err == nil {
-						resetAt = t
-					}
-				}
-				account.SetUsageSnapshot5h(parsed, resetAt)
-			}
-		}
-		if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
-			account.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(threshold)
-		}
-		if threshold, ok := row.GetCredentialFloat64("auto_pause_7d_threshold"); ok {
-			account.AutoPause7dThreshold = normalizeQuotaAutoPauseThreshold(threshold)
-		}
-		account.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
-		account.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
-		for _, cooldown := range modelCooldowns[row.ID] {
-			account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
-		}
-		account.mu.Lock()
-		account.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
-		account.mu.Unlock()
-
 		s.accounts = append(s.accounts, account)
 	}
 
@@ -2759,6 +2634,170 @@ func (s *Store) loadFromDB(ctx context.Context) error {
 	if err := s.LoadAPIKeyAllowedGroups(ctx); err != nil {
 		log.Printf("加载 API Key 分组限制失败: %v", err)
 	}
+	return nil
+}
+
+// buildAccountFromRow 将数据库账号行转换为运行时账号；凭据缺失或不可用时返回 nil。
+func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRow, modelCooldowns map[int64][]*database.AccountModelCooldownRow) *Account {
+	rt := row.GetCredential("refresh_token")
+	st := row.GetCredential("session_token")
+	at := row.GetCredential("access_token")
+	upstreamType := row.GetCredential("upstream_type")
+	baseURL := row.GetCredential("base_url")
+	apiKey := row.GetCredential("api_key")
+	models := normalizeModelList(row.GetCredentialStringSlice("models"))
+	isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenAIResponses) && strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
+	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount {
+		log.Printf("[账号 %d] 缺少 refresh_token、session_token 和 access_token，跳过", row.ID)
+		return nil
+	}
+
+	account := &Account{
+		DBID:         row.ID,
+		RefreshToken: rt,
+		SessionToken: st,
+		ProxyURL:     strings.TrimSpace(row.ProxyURL),
+		HealthTier:   HealthTierWarm,
+		AddedAt:      row.CreatedAt.UnixNano(),
+		UpstreamType: upstreamType,
+		BaseURL:      strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		APIKey:       strings.TrimSpace(apiKey),
+		Models:       models,
+	}
+	if isOpenAIResponsesAccount {
+		account.HealthTier = HealthTierHealthy
+		if account.PlanType == "" {
+			account.PlanType = "api"
+		}
+	}
+	account.ScoreBiasOverride = reflectOptionalInt64Field(row, "ScoreBiasOverride")
+	account.BaseConcurrencyOverride = reflectOptionalInt64Field(row, "BaseConcurrencyOverride")
+	account.setAllowedAPIKeyIDsLocked(row.GetCredentialInt64Slice("allowed_api_key_ids"))
+	account.Tags = cloneStringSlice(row.Tags)
+	if row.Locked {
+		atomic.StoreInt32(&account.Locked, 1)
+	}
+	if !row.Enabled {
+		atomic.StoreInt32(&account.DispatchPaused, 1)
+	}
+	account.CreditEnabled = row.CreditEnabled
+	account.CreditSkipUsageWindow = row.CreditSkipUsageWindow
+	account.SkipWarmTier = row.SkipWarmTier
+	if row.Status == "error" {
+		account.Status = StatusError
+		account.ErrorMsg = row.ErrorMessage
+		account.HealthTier = HealthTierRisky
+	}
+
+	// 尝试从 credentials 恢复已有的 AT
+	if at != "" {
+		account.AccessToken = at
+		account.AccountID = row.GetCredential("account_id")
+		account.Email = row.GetCredential("email")
+		account.PlanType = row.GetCredential("plan_type")
+		if account.Status != StatusError {
+			account.HealthTier = HealthTierHealthy
+		}
+		if expiresAt := row.GetCredential("expires_at"); expiresAt != "" {
+			if parsed, err := time.Parse(time.RFC3339, expiresAt); err == nil {
+				account.ExpiresAt = parsed
+			} else {
+				log.Printf("[账号 %d] 解析 expires_at 失败: %v", row.ID, err)
+			}
+		}
+	}
+	if subExp := row.GetCredential("subscription_expires_at"); subExp != "" {
+		if parsed, err := time.Parse(time.RFC3339, subExp); err == nil {
+			account.SubscriptionExpiresAt = parsed
+		}
+	}
+	if row.CooldownUntil.Valid {
+		if time.Now().Before(row.CooldownUntil.Time) {
+			account.SetCooldownUntil(row.CooldownUntil.Time, row.CooldownReason)
+		} else if row.CooldownReason != "" {
+			if err := s.db.ClearCooldown(ctx, row.ID); err != nil {
+				log.Printf("[账号 %d] 清理过期冷却状态失败: %v", row.ID, err)
+			}
+		}
+	}
+	if usagePct := row.GetCredential("codex_7d_used_percent"); usagePct != "" {
+		if parsed, err := strconv.ParseFloat(usagePct, 64); err == nil {
+			updatedAt := time.Time{}
+			if usageUpdatedAt := row.GetCredential("codex_usage_updated_at"); usageUpdatedAt != "" {
+				if parsedTime, err := time.Parse(time.RFC3339, usageUpdatedAt); err == nil {
+					updatedAt = parsedTime
+				} else {
+					log.Printf("[账号 %d] 解析 codex_usage_updated_at 失败: %v", row.ID, err)
+				}
+			}
+			account.SetUsageSnapshot(parsed, updatedAt)
+			// 恢复 7d 重置时间
+			if resetAt := row.GetCredential("codex_7d_reset_at"); resetAt != "" {
+				if t, err := time.Parse(time.RFC3339, resetAt); err == nil {
+					account.SetReset7dAt(t)
+				}
+			}
+		} else {
+			log.Printf("[账号 %d] 解析 codex_7d_used_percent 失败: %v", row.ID, err)
+		}
+	}
+	// 恢复 5h 用量快照
+	if usagePct5h := row.GetCredential("codex_5h_used_percent"); usagePct5h != "" {
+		if parsed, err := strconv.ParseFloat(usagePct5h, 64); err == nil {
+			resetAt := time.Time{}
+			if r := row.GetCredential("codex_5h_reset_at"); r != "" {
+				if t, err := time.Parse(time.RFC3339, r); err == nil {
+					resetAt = t
+				}
+			}
+			account.SetUsageSnapshot5h(parsed, resetAt)
+		}
+	}
+	if threshold, ok := row.GetCredentialFloat64("auto_pause_5h_threshold"); ok {
+		account.AutoPause5hThreshold = normalizeQuotaAutoPauseThreshold(threshold)
+	}
+	if threshold, ok := row.GetCredentialFloat64("auto_pause_7d_threshold"); ok {
+		account.AutoPause7dThreshold = normalizeQuotaAutoPauseThreshold(threshold)
+	}
+	account.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
+	account.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
+	for _, cooldown := range modelCooldowns[row.ID] {
+		account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
+	}
+	account.mu.Lock()
+	account.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	account.mu.Unlock()
+	return account
+}
+
+// BuildTransientAccountByID 从数据库构建一个临时账号（包含回收站中的已删除账号），
+// 不加入运行时池、不参与调度，用于回收站的连通性测试。
+func (s *Store) BuildTransientAccountByID(ctx context.Context, dbID int64) (*Account, error) {
+	row, err := s.db.GetAccountByIDIncludingDeleted(ctx, dbID)
+	if err != nil {
+		return nil, err
+	}
+	account := s.buildAccountFromRow(ctx, row, nil)
+	if account == nil {
+		return nil, fmt.Errorf("账号 %d 缺少可用凭据", dbID)
+	}
+	return account, nil
+}
+
+// LoadAccountByID 从数据库加载单个账号并加入运行时池（用于回收站恢复等场景）。
+func (s *Store) LoadAccountByID(ctx context.Context, dbID int64) error {
+	if s.FindByID(dbID) != nil {
+		return nil
+	}
+	row, err := s.db.GetAccountByID(ctx, dbID)
+	if err != nil {
+		return err
+	}
+	account := s.buildAccountFromRow(ctx, row, nil)
+	if account == nil {
+		return fmt.Errorf("账号 %d 缺少可用凭据", dbID)
+	}
+	s.AddAccount(account)
 	return nil
 }
 

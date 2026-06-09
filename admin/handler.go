@@ -288,6 +288,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/sub2api/import", h.ImportFromSub2API)
 	api.PATCH("/accounts/:id/scheduler", h.UpdateAccountScheduler)
 	api.DELETE("/accounts/:id", h.DeleteAccount)
+	api.GET("/accounts/recycle-bin", h.ListRecycleBinAccounts)
+	api.DELETE("/accounts/recycle-bin", h.EmptyRecycleBin)
+	api.POST("/accounts/recycle-bin/batch-test", h.RecycleBinBatchTest)
+	api.POST("/accounts/:id/restore", h.RestoreAccount)
+	api.DELETE("/accounts/:id/purge", h.PurgeAccount)
 	api.POST("/accounts/:id/refresh", h.RefreshAccount)
 	api.POST("/accounts/:id/enable", h.ToggleAccountEnabled)
 	api.POST("/accounts/:id/lock", h.ToggleAccountLock)
@@ -3014,6 +3019,165 @@ func (h *Handler) deleteAccountByID(ctx context.Context, id int64) error {
 	h.store.RemoveAccount(id)
 	h.db.InsertAccountEventAsync(id, "deleted", "manual")
 	return nil
+}
+
+type recycleBinAccountResponse struct {
+	ID                 int64    `json:"id"`
+	Name               string   `json:"name"`
+	Email              string   `json:"email"`
+	PlanType           string   `json:"plan_type"`
+	ATOnly             bool     `json:"at_only"`
+	OpenAIResponsesAPI bool     `json:"openai_responses_api"`
+	BaseURL            string   `json:"base_url,omitempty"`
+	Models             []string `json:"models,omitempty"`
+	CreatedAt          string   `json:"created_at"`
+	DeletedAt          string   `json:"deleted_at,omitempty"`
+	LastTestStatus     string   `json:"last_test_status,omitempty"`
+	LastTestAt         string   `json:"last_test_at,omitempty"`
+}
+
+// ListRecycleBinAccounts 获取回收站账号列表
+// GET /api/admin/accounts/recycle-bin
+func (h *Handler) ListRecycleBinAccounts(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	rows, err := h.db.ListDeleted(ctx)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+
+	accounts := make([]recycleBinAccountResponse, 0, len(rows))
+	for _, row := range rows {
+		isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(row.GetCredential("upstream_type")), auth.UpstreamOpenAIResponses)
+		email := row.GetCredential("email")
+		baseURL := row.GetCredential("base_url")
+		if isOpenAIResponsesAccount && email == "" {
+			email = baseURL
+		}
+		planType := row.GetCredential("plan_type")
+		if isOpenAIResponsesAccount && planType == "" {
+			planType = "api"
+		}
+		resp := recycleBinAccountResponse{
+			ID:                 row.ID,
+			Name:               row.Name,
+			Email:              email,
+			PlanType:           planType,
+			ATOnly:             !isOpenAIResponsesAccount && row.GetCredential("refresh_token") == "" && row.GetCredential("access_token") != "",
+			OpenAIResponsesAPI: isOpenAIResponsesAccount,
+			BaseURL:            baseURL,
+			Models:             row.GetCredentialStringSlice("models"),
+			CreatedAt:          row.CreatedAt.Format(time.RFC3339),
+			LastTestStatus:     row.GetCredential("recycle_last_test_status"),
+			LastTestAt:         row.GetCredential("recycle_last_test_at"),
+		}
+		if row.DeletedAt.Valid {
+			resp.DeletedAt = row.DeletedAt.Time.Format(time.RFC3339)
+		} else if !row.UpdatedAt.IsZero() {
+			// 旧数据可能没有 deleted_at；软删除会刷新 updated_at，用它兜底。
+			resp.DeletedAt = row.UpdatedAt.Format(time.RFC3339)
+		}
+		accounts = append(accounts, resp)
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": accounts})
+}
+
+// RestoreAccount 将回收站中的账号恢复到账号池
+// POST /api/admin/accounts/:id/restore
+func (h *Handler) RestoreAccount(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := h.restoreAccountByID(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "回收站中不存在该账号")
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "恢复失败: "+err.Error())
+		return
+	}
+	writeMessage(c, http.StatusOK, "账号已恢复")
+}
+
+// restoreAccountByID 将回收站账号恢复为 active 并重新加入运行时池。
+func (h *Handler) restoreAccountByID(ctx context.Context, id int64) error {
+	if err := h.db.RestoreAccount(ctx, id); err != nil {
+		return err
+	}
+	if err := h.store.LoadAccountByID(ctx, id); err != nil {
+		log.Printf("恢复账号 %d 后加载运行时失败: %v", id, err)
+	}
+	h.db.InsertAccountEventAsync(id, "restored", "recycle_bin")
+	return nil
+}
+
+// PurgeAccount 从回收站彻底删除账号（物理删除）
+// DELETE /api/admin/accounts/:id/purge
+func (h *Handler) PurgeAccount(c *gin.Context) {
+	idStr := c.Param("id")
+	id, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+
+	if err := h.db.PurgeAccount(ctx, id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "回收站中不存在该账号")
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "彻底删除失败: "+err.Error())
+		return
+	}
+	h.store.RemoveAccount(id)
+	security.SecurityAuditLog("ACCOUNT_PURGED", fmt.Sprintf("account_id=%d ip=%s", id, c.ClientIP()))
+	writeMessage(c, http.StatusOK, "账号已彻底删除")
+}
+
+// emptyRecycleBinConfirmToken 清空回收站的确认令牌；调用方必须在请求体中
+// 显式携带，防止误调用或脚本一键清空导致账号被不可逆地物理删除。
+const emptyRecycleBinConfirmToken = "EMPTY-RECYCLE-BIN"
+
+// EmptyRecycleBin 清空回收站
+// DELETE /api/admin/accounts/recycle-bin
+// 请求体必须携带 {"confirm":"EMPTY-RECYCLE-BIN"}，否则拒绝执行。
+func (h *Handler) EmptyRecycleBin(c *gin.Context) {
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			writeError(c, http.StatusBadRequest, "请求格式错误")
+			return
+		}
+	}
+	if strings.TrimSpace(req.Confirm) != emptyRecycleBinConfirmToken {
+		writeError(c, http.StatusBadRequest, `清空回收站需要确认：请求体需携带 confirm="EMPTY-RECYCLE-BIN"`)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
+	purged, err := h.db.PurgeDeletedAccounts(ctx)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "清空回收站失败: "+err.Error())
+		return
+	}
+	security.SecurityAuditLog("RECYCLE_BIN_EMPTIED", fmt.Sprintf("purged=%d ip=%s", purged, c.ClientIP()))
+	c.JSON(http.StatusOK, gin.H{"message": "回收站已清空", "purged": purged})
 }
 
 // BatchDeleteAccounts 批量删除账号；stream=true 时以 SSE 返回实时进度。
