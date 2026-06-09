@@ -451,24 +451,7 @@ func (h *Handler) GetStats(c *gin.Context) {
 		return
 	}
 
-	total := len(accounts)
-	available := h.store.AvailableCount()
-	rateLimitedCount := 0
-	for _, acc := range h.store.Accounts() {
-		if acc == nil {
-			continue
-		}
-		switch acc.RuntimeStatus() {
-		case "rate_limited", "usage_exhausted":
-			rateLimitedCount++
-		}
-	}
-	errCount := 0
-	for _, acc := range accounts {
-		if acc.Status == "error" {
-			errCount++
-		}
-	}
+	accountCounts := summarizeDashboardAccounts(accounts, h.store.Accounts())
 
 	usageStats, _ := h.getUsageStatsCached(ctx, time.Time{}, time.Time{})
 	todayReqs := int64(0)
@@ -477,12 +460,73 @@ func (h *Handler) GetStats(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, statsResponse{
-		Total:         total,
-		Available:     available,
-		RateLimited:   rateLimitedCount,
-		Error:         errCount,
+		Total:         accountCounts.total,
+		Available:     accountCounts.normal,
+		RateLimited:   accountCounts.rateLimited,
+		Error:         accountCounts.abnormal,
 		TodayRequests: todayReqs,
 	})
+}
+
+type dashboardAccountCounts struct {
+	total       int
+	normal      int
+	rateLimited int
+	abnormal    int
+	disabled    int
+}
+
+func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*auth.Account) dashboardAccountCounts {
+	runtimeByID := make(map[int64]*auth.Account, len(runtimeAccounts))
+	for _, acc := range runtimeAccounts {
+		if acc != nil {
+			runtimeByID[acc.DBID] = acc
+		}
+	}
+
+	var counts dashboardAccountCounts
+	counts.total = len(rows)
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		status := strings.ToLower(strings.TrimSpace(row.Status))
+		cooldownReason := strings.ToLower(strings.TrimSpace(row.CooldownReason))
+		if acc, ok := runtimeByID[row.ID]; ok {
+			status = strings.ToLower(strings.TrimSpace(acc.RuntimeStatus()))
+			cooldownReason = ""
+		}
+
+		if !row.Enabled {
+			counts.disabled++
+		}
+		if isDashboardAbnormalAccount(status) {
+			counts.abnormal++
+			continue
+		}
+		if isDashboardRateLimitedAccount(status, cooldownReason) {
+			counts.rateLimited++
+			continue
+		}
+		counts.normal++
+	}
+	return counts
+}
+
+func isDashboardAbnormalAccount(status string) bool {
+	return status == "unauthorized" || status == "error"
+}
+
+func isDashboardRateLimitedAccount(status string, cooldownReason string) bool {
+	switch status {
+	case "rate_limited", "usage_exhausted", "quota_paused", "rate_limited_5h", "rate_limited_7d":
+		return true
+	}
+	switch cooldownReason {
+	case "rate_limited", "rate_limited_5h", "rate_limited_7d":
+		return true
+	}
+	return false
 }
 
 // ==================== Accounts ====================

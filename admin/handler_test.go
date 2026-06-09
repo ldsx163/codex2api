@@ -75,6 +75,38 @@ func TestAccountEmailDomain(t *testing.T) {
 	}
 }
 
+func TestSummarizeDashboardAccountsMatchesAccountPageBuckets(t *testing.T) {
+	rows := []*database.AccountRow{
+		{ID: 1, Status: "error", Enabled: true},   // DB stale, runtime active
+		{ID: 2, Status: "active", Enabled: true},  // runtime unauthorized
+		{ID: 3, Status: "active", Enabled: false}, // disabled
+		{ID: 4, Status: "active", Enabled: true},  // runtime rate limited
+		{ID: 5, Status: "active", Enabled: true},  // normal
+		{ID: 6, Status: "error", Enabled: true},   // DB error without runtime override
+		{ID: 7, Status: "cooldown", Enabled: true, CooldownReason: "rate_limited"},
+	}
+
+	activeFromStaleDB := &auth.Account{DBID: 1, Status: auth.StatusReady, AccessToken: "at-1"}
+	unauthorized := &auth.Account{DBID: 2, Status: auth.StatusReady, AccessToken: "at-2"}
+	unauthorized.SetCooldownWithReason(time.Hour, "unauthorized")
+	disabled := &auth.Account{DBID: 3, Status: auth.StatusReady, AccessToken: "at-3"}
+	rateLimited := &auth.Account{DBID: 4, Status: auth.StatusReady, AccessToken: "at-4"}
+	rateLimited.SetCooldownWithReason(time.Hour, "rate_limited")
+	normal := &auth.Account{DBID: 5, Status: auth.StatusReady, AccessToken: "at-5"}
+
+	got := summarizeDashboardAccounts(rows, []*auth.Account{
+		activeFromStaleDB,
+		unauthorized,
+		disabled,
+		rateLimited,
+		normal,
+	})
+
+	if got.total != 7 || got.normal != 3 || got.rateLimited != 2 || got.abnormal != 2 || got.disabled != 1 {
+		t.Fatalf("counts = %+v, want total=7 normal=3 rateLimited=2 abnormal=2 disabled=1", got)
+	}
+}
+
 func TestNormalizeBackgroundUploadMedia(t *testing.T) {
 	tests := []struct {
 		name        string

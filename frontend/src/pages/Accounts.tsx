@@ -1011,8 +1011,7 @@ export default function Accounts() {
 
   const accountSummary = useMemo(() => {
     const rateLimitedWindowStats = getRateLimitedWindowStats(accounts);
-    // 互斥分类:每个账号只属于 异常 / 限流 / 正常 之一,三者相加等于总数。
-    // 优先级:异常(封禁/错误/禁用) > 限流 > 正常。locked 不影响分类,视为正常状态的一种子标记。
+    // 健康分类:异常(封禁/错误) > 限流 > 正常。禁用只是调度开关,保留独立计数但不影响健康分类。
     const bannedAccounts = accounts.filter(
       (account) => account.status === "unauthorized",
     ).length;
@@ -1025,14 +1024,12 @@ export default function Accounts() {
     const abnormalAccounts = accounts.filter(
       (account) =>
         account.status === "unauthorized" ||
-        account.status === "error" ||
-        account.enabled === false,
+        account.status === "error",
     ).length;
     const rateLimitedExclusive = accounts.filter(
       (account) =>
         account.status !== "unauthorized" &&
         account.status !== "error" &&
-        account.enabled !== false &&
         isRateLimitedAccount(account),
     ).length;
     const normalAccounts = accounts.length - abnormalAccounts - rateLimitedExclusive;
@@ -1114,7 +1111,6 @@ export default function Accounts() {
           if (
             account.status === "unauthorized" ||
             account.status === "error" ||
-            account.enabled === false ||
             isRateLimitedAccount(account)
           )
             return false;
@@ -1124,8 +1120,7 @@ export default function Accounts() {
         case "rate_limited":
           if (
             account.status === "unauthorized" ||
-            account.status === "error" ||
-            account.enabled === false
+            account.status === "error"
           )
             return false;
           if (!isRateLimitedAccount(account)) return false;
@@ -1133,8 +1128,7 @@ export default function Accounts() {
         case "abnormal":
           if (
             account.status !== "unauthorized" &&
-            account.status !== "error" &&
-            account.enabled !== false
+            account.status !== "error"
           )
             return false;
           break;
@@ -2991,7 +2985,6 @@ export default function Accounts() {
               details={[
                 { label: t("accounts.abnormalBannedShort"), value: bannedAccounts },
                 { label: t("accounts.abnormalErrorShort"), value: errorAccounts },
-                { label: t("accounts.abnormalDisabledShort"), value: disabledAccounts },
               ]}
             />
           </div>
