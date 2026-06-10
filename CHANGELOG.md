@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.3.1 - 2026-06-11
+
+### Features
+
+- **Group-level and global auto-pause thresholds (#227).** Usage auto-pause thresholds can now be set globally (Settings) and per account group (group dialog), resolved with account > group > global priority. Account-level settings win when present, otherwise the smallest non-zero group threshold applies, falling back to the global default. Changes take effect immediately without a restart, and out-of-range values are rejected consistently across all three levels.
+- **API key concurrency limits (#226).** Each API key can cap its concurrent in-flight requests via `limits.max_concurrency`. Requests over the cap receive 429 with a descriptive message across all proxy entrances (responses, compact, chat completions, Anthropic messages, images, WebSocket turns). Unset or 0 means unlimited.
+- **Account group multi-select binding (#217, #222).** Account group assignment now uses a searchable multi-select dropdown instead of assigning new groups to all accounts.
+
+### Fixes
+
+- **WebSocket prompt cache restored (#202).** Since v2.2.7, requests without an explicit session identifier got a random per-request `stateless-` ID on the WS upstream path, which leaked into `prompt_cache_key` and the WS handshake session headers — so the upstream prompt cache never hit in WS mode (HTTP was unaffected). WS now injects a deterministic cache key derived from the downstream API key (matching HTTP behavior), restoring cache hits (~86% of input tokens on repeated prefixes in live testing).
+- **WebSocket connection reuse under high RPM.** Sessionless requests previously opened a new WS connection per request; sustained load (~200 RPM) triggered upstream handshake throttling (`bad handshake` → 503). Such requests now reuse warm connections from a per-(account, cache key) slot pool (8 slots, falling back to one-shot connections when all slots are busy). Live testing at 200 RPM went from 128/200 success to 200/200 with zero handshake failures and roughly halved latency.
+- **Codex CLI compact v2 input items (#224).** `/responses` no longer returns 400 `Invalid input type 'compaction_trigger'` for Codex CLI compact v2 payloads.
+- **Usage probed immediately after OAuth account add.** Newly added OAuth accounts get an immediate usage probe instead of waiting for the next cycle.
+- **Account table scrolling.** Adjusted account table scrolling behavior in the admin UI.
+
 ## v2.3.0 - 2026-06-10
 
 ### Features
