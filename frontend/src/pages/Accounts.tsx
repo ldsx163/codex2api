@@ -93,6 +93,12 @@ import Sub2APIImportModal from "../components/Sub2APIImportModal";
 import AccountQuotaDistributionChart from "../components/AccountQuotaDistributionChart";
 import AccountRateLimitRecoveryChart from "../components/AccountRateLimitRecoveryChart";
 import AccountGroupMultiSelect from "../components/AccountGroupMultiSelect";
+import AccountGroupFilterSelect, {
+  EMPTY_ACCOUNT_GROUP_FILTER,
+  accountMatchesGroupFilter,
+  pruneAccountGroupFilter,
+  type AccountGroupFilterValue,
+} from "../components/AccountGroupFilterSelect";
 import ChipInput from "../components/ChipInput";
 
 const ACCOUNT_BATCH_CONCURRENCY = 6;
@@ -139,10 +145,7 @@ function getDefaultAccountVisibleColumns(): Record<
   boolean
 > {
   return Object.fromEntries(
-    ACCOUNT_TABLE_COLUMNS.map((column) => [
-      column,
-      column !== "tags" && column !== "groups",
-    ]),
+    ACCOUNT_TABLE_COLUMNS.map((column) => [column, column !== "tags"]),
   ) as Record<AccountTableColumn, boolean>;
 }
 
@@ -160,9 +163,7 @@ function getInitialAccountVisibleColumns(): Record<
     return Object.fromEntries(
       ACCOUNT_TABLE_COLUMNS.map((column) => [
         column,
-        column === "tags" || column === "groups"
-          ? parsed[column] === true
-          : parsed[column] !== false,
+        column === "tags" ? parsed[column] === true : parsed[column] !== false,
       ]),
     ) as Record<AccountTableColumn, boolean>;
   } catch {
@@ -625,7 +626,9 @@ export default function Accounts() {
   const [editGroupIds, setEditGroupIds] = useState<number[]>([]);
   const [tagFilter, setTagFilter] = useState<string>("");
   const [domainFilter, setDomainFilter] = useState<string>("");
-  const [groupFilter, setGroupFilter] = useState<number | null>(null);
+  const [groupFilter, setGroupFilter] = useState<AccountGroupFilterValue>(
+    EMPTY_ACCOUNT_GROUP_FILTER,
+  );
   const [allGroups, setAllGroups] = useState<AccountGroup[]>([]);
   const [showGroupManager, setShowGroupManager] = useState(false);
   const [groupDraft, setGroupDraft] = useState<AccountGroupDraft>({
@@ -960,11 +963,8 @@ export default function Accounts() {
   }, [viewMode]);
 
   useEffect(() => {
-    if (groupFilter === null) return;
-    if (!allGroups.some((group) => group.id === groupFilter)) {
-      setGroupFilter(null);
-    }
-  }, [allGroups, groupFilter]);
+    setGroupFilter((current) => pruneAccountGroupFilter(current, allGroups));
+  }, [allGroups]);
 
   useEffect(() => {
     const needsUsageReload = (account: AccountRow) => {
@@ -1180,10 +1180,7 @@ export default function Accounts() {
       }
       if (tagFilter && !(account.tags ?? []).includes(tagFilter)) return false;
       if (domainFilter && getAccountEmailDomain(account) !== domainFilter) return false;
-      if (
-        groupFilter !== null &&
-        !(account.group_ids ?? []).includes(groupFilter)
-      )
+      if (!accountMatchesGroupFilter(account.group_ids ?? [], groupFilter))
         return false;
       return true;
     });
@@ -2751,7 +2748,12 @@ export default function Accounts() {
       showToast(t("accounts.groupDeleted"));
       setEditGroupIds((current) => current.filter((id) => id !== group.id));
       setBatchGroupIds((current) => current.filter((id) => id !== group.id));
-      if (groupFilter === group.id) setGroupFilter(null);
+      setGroupFilter((current) =>
+        pruneAccountGroupFilter(
+          current,
+          allGroups.filter((item) => item.id !== group.id),
+        ),
+      );
       if (groupDraft.id === group.id) resetGroupDraft();
       await Promise.all([reload(), reloadGroups()]);
     } catch (error) {
@@ -3227,21 +3229,14 @@ export default function Accounts() {
                 ? t("accounts.hideEmailDomainTags")
                 : t("accounts.showEmailDomainTags")}
             </Button>
-            <Select
-              className="w-36 shrink-0"
-              compact
-              value={groupFilter === null ? "all" : String(groupFilter)}
-              onValueChange={(value) => {
-                setGroupFilter(value === "all" ? null : Number(value));
+            <AccountGroupFilterSelect
+              className="w-40 shrink-0"
+              groups={allGroups}
+              value={groupFilter}
+              onChange={(value) => {
+                setGroupFilter(value);
                 setPage(1);
               }}
-              options={[
-                { value: "all", label: t("accounts.groupsFilter") },
-                ...allGroups.map((group) => ({
-                  value: String(group.id),
-                  label: group.name,
-                })),
-              ]}
             />
             <Button
               type="button"
