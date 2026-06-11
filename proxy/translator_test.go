@@ -405,6 +405,59 @@ func TestPrepareResponsesBody_DefaultsMissingFunctionToolParameters(t *testing.T
 	}
 }
 
+func TestTranslateRequest_InfersFunctionToolTypeWhenMissing(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[
+			{"function":{"name":"get_weather","parameters":{"type":"object","properties":{}}}},
+			{"name":"lookup","parameters":{"type":"object","properties":{}}}
+		]
+	}`)
+
+	got, err := TranslateRequest(raw)
+	if err != nil {
+		t.Fatalf("TranslateRequest returned error: %v", err)
+	}
+
+	first := gjson.GetBytes(got, "tools.0")
+	if toolType := first.Get("type").String(); toolType != "function" {
+		t.Fatalf("tools.0.type = %q, want function; body=%s", toolType, got)
+	}
+	if name := first.Get("name").String(); name != "get_weather" {
+		t.Fatalf("tools.0.name = %q, want get_weather; body=%s", name, got)
+	}
+	if first.Get("function").Exists() {
+		t.Fatalf("tools.0 nested function object should be expanded, got %s", got)
+	}
+	second := gjson.GetBytes(got, "tools.1")
+	if toolType := second.Get("type").String(); toolType != "function" {
+		t.Fatalf("tools.1.type = %q, want function; body=%s", toolType, got)
+	}
+	if name := second.Get("name").String(); name != "lookup" {
+		t.Fatalf("tools.1.name = %q, want lookup; body=%s", name, got)
+	}
+}
+
+func TestTranslateRequest_DropsTypelessUnrecognizedTool(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"messages":[{"role":"user","content":"hi"}],
+		"tools":[{"foo":"bar"},{"type":null,"description":"no shape"}]
+	}`)
+
+	got, err := TranslateRequest(raw)
+	if err != nil {
+		t.Fatalf("TranslateRequest returned error: %v", err)
+	}
+
+	for _, tool := range gjson.GetBytes(got, "tools").Array() {
+		if strings.TrimSpace(tool.Get("type").String()) == "" {
+			t.Fatalf("typeless tool should be dropped, got %s", got)
+		}
+	}
+}
+
 func TestTranslateRequest_DefaultsNullFunctionToolParameters(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5.4",
@@ -1510,6 +1563,56 @@ func TestValidateResponsesFunctionNamesAllowsValidFunctionNames(t *testing.T) {
 
 	if err := ValidateResponsesFunctionNames(raw); err != nil {
 		t.Fatalf("valid function names should pass, got %v", err)
+	}
+}
+
+func TestPrepareResponsesBody_InfersFunctionToolTypeWhenMissing(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":"hi",
+		"tools":[
+			{"name":"get_weather","parameters":{"type":"object","properties":{}}},
+			{"type":null,"function":{"name":"lookup"}}
+		]
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	first := gjson.GetBytes(got, "tools.0")
+	if toolType := first.Get("type").String(); toolType != "function" {
+		t.Fatalf("tools.0.type = %q, want function; body=%s", toolType, got)
+	}
+	if name := first.Get("name").String(); name != "get_weather" {
+		t.Fatalf("tools.0.name = %q, want get_weather; body=%s", name, got)
+	}
+	second := gjson.GetBytes(got, "tools.1")
+	if toolType := second.Get("type").String(); toolType != "function" {
+		t.Fatalf("tools.1.type = %q, want function; body=%s", toolType, got)
+	}
+	if name := second.Get("name").String(); name != "lookup" {
+		t.Fatalf("tools.1.name = %q, want lookup; body=%s", name, got)
+	}
+	if second.Get("function").Exists() {
+		t.Fatalf("tools.1 nested function object should be removed, got %s", got)
+	}
+}
+
+func TestPrepareResponsesBody_DropsTypelessUnrecognizedTool(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5.4",
+		"input":"hi",
+		"tools":[{"foo":"bar"}]
+	}`)
+
+	got, _ := PrepareResponsesBody(raw)
+
+	for _, tool := range gjson.GetBytes(got, "tools").Array() {
+		if strings.TrimSpace(tool.Get("type").String()) == "" {
+			t.Fatalf("typeless tool should be dropped, got %s", got)
+		}
+		if tool.Get("foo").Exists() {
+			t.Fatalf("unrecognized tool should be dropped, got %s", got)
+		}
 	}
 }
 

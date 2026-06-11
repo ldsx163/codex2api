@@ -1306,11 +1306,32 @@ func normalizeResponsesFunctionTools(body map[string]any) bool {
 	}
 
 	modified := false
+	kept := make([]any, 0, len(tools))
 	for _, rawTool := range tools {
 		tool, ok := rawTool.(map[string]any)
-		if !ok || strings.TrimSpace(firstNonEmptyAnyString(tool["type"])) != "function" {
+		if !ok {
+			kept = append(kept, rawTool)
 			continue
 		}
+		toolType := strings.TrimSpace(firstNonEmptyAnyString(tool["type"]))
+		if toolType == "" {
+			// 上游对缺失或为 null 的工具 type 返回 400 "Unsupported tool
+			// type: None"（issue #219）。带 function 形态（function 子对象
+			// 或顶层 name）的工具按 OpenAI SDK 惯例视为 function；无法识别
+			// 形态的工具直接剔除，避免整个请求被上游拒绝。
+			function, _ := tool["function"].(map[string]any)
+			if function == nil &&
+				strings.TrimSpace(firstNonEmptyAnyString(tool["name"])) == "" {
+				modified = true
+				continue
+			}
+			tool["type"] = "function"
+			modified = true
+		} else if toolType != "function" {
+			kept = append(kept, tool)
+			continue
+		}
+		kept = append(kept, tool)
 		function, _ := tool["function"].(map[string]any)
 		if function == nil {
 			continue
@@ -1341,6 +1362,9 @@ func normalizeResponsesFunctionTools(body map[string]any) bool {
 		}
 		delete(tool, "function")
 		modified = true
+	}
+	if modified {
+		body["tools"] = kept
 	}
 	return modified
 }
@@ -1771,12 +1795,29 @@ func convertToolsToCodexFormat(rawTools []json.RawMessage) []any {
 			continue
 		}
 
-		if parsed.Type != "function" || parsed.Function == nil {
+		// type 缺失或为 null 时按 OpenAI SDK 惯例视为 function（前提是带
+		// function 对象）；上游对空 type 一律返回 400 "Unsupported tool
+		// type: None"（issue #219），无法识别形态的工具直接丢弃。
+		isFunction := parsed.Function != nil &&
+			(parsed.Type == "function" || parsed.Type == "")
+		if !isFunction {
+			if parsed.Type == "" {
+				// 无 function 对象但有顶层 name（Codex 格式缺 type）→ 补全
+				// type 后保留；其余直接丢弃。
+				var toolMap map[string]any
+				if json.Unmarshal(raw, &toolMap) == nil &&
+					strings.TrimSpace(firstNonEmptyAnyString(toolMap["name"])) != "" {
+					toolMap["type"] = "function"
+					normalizeFunctionToolParameters(toolMap)
+					tools = append(tools, toolMap)
+				}
+				continue
+			}
 			// 非 function 类型 → 透传原始 JSON
 			// 例外：把 web_search_preview 等变体归一为 web_search，
 			// Codex 上游只认裸 "web_search"。归一时保留白名单字段，
 			// 与 PrepareResponsesBody 路径行为一致。
-			if parsed.Type != "" && strings.HasPrefix(parsed.Type, "web_search") {
+			if strings.HasPrefix(parsed.Type, "web_search") {
 				var toolMap map[string]any
 				if json.Unmarshal(raw, &toolMap) == nil && toolMap != nil {
 					tools = append(tools, normalizeCodexWebSearchTool(toolMap))
