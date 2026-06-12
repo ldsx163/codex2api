@@ -923,6 +923,9 @@ func isInvalidEncryptedContentError(statusCode int, body []byte) bool {
 	if statusCode != http.StatusBadRequest {
 		return false
 	}
+	if isMissingEncryptedContentError(body) {
+		return true
+	}
 	for _, path := range []string{"error.code", "detail.code", "code"} {
 		if strings.EqualFold(strings.TrimSpace(gjson.GetBytes(body, path).String()), "invalid_encrypted_content") {
 			return true
@@ -944,6 +947,16 @@ func isInvalidEncryptedContentError(statusCode int, body []byte) bool {
 		}
 	}
 	return false
+}
+
+func isMissingEncryptedContentError(body []byte) bool {
+	code := strings.TrimSpace(gjson.GetBytes(body, "error.code").String())
+	param := strings.TrimSpace(gjson.GetBytes(body, "error.param").String())
+	if !strings.EqualFold(code, "missing_required_parameter") || !strings.HasSuffix(param, ".encrypted_content") {
+		return false
+	}
+	msg := strings.ToLower(gjson.GetBytes(body, "error.message").String())
+	return strings.Contains(msg, "encrypted_content")
 }
 
 func stripInvalidEncryptedContentFromResponsesBody(body []byte) ([]byte, bool) {
@@ -991,13 +1004,16 @@ func stripInvalidEncryptedContentValue(value any, arrayItem bool) (any, bool, bo
 	case map[string]any:
 		changed := false
 		if strings.TrimSpace(firstNonEmptyAnyString(v["type"])) == "reasoning" {
-			if _, hasEncrypted := v["encrypted_content"]; hasEncrypted {
-				if arrayItem {
-					return nil, true, false
-				}
-				delete(v, "encrypted_content")
-				changed = true
+			if arrayItem {
+				return nil, true, false
 			}
+			if _, hasEncrypted := v["encrypted_content"]; hasEncrypted {
+				delete(v, "encrypted_content")
+			}
+			if len(v) == 1 {
+				return nil, true, false
+			}
+			changed = true
 		} else if _, hasEncrypted := v["encrypted_content"]; hasEncrypted {
 			delete(v, "encrypted_content")
 			changed = true
@@ -1025,6 +1041,51 @@ func responsesInputRaw(body []byte) string {
 		return ""
 	}
 	return input.Raw
+}
+
+func dropBareReasoningInputItems(body map[string]any) bool {
+	input, ok := body["input"]
+	if !ok {
+		return false
+	}
+	cleaned, changed, keep := dropBareReasoningInputValue(input)
+	if !changed {
+		return false
+	}
+	if keep {
+		body["input"] = cleaned
+	} else {
+		delete(body, "input")
+	}
+	return true
+}
+
+func dropBareReasoningInputValue(value any) (any, bool, bool) {
+	switch v := value.(type) {
+	case []any:
+		changed := false
+		out := make([]any, 0, len(v))
+		for _, item := range v {
+			cleaned, itemChanged, keep := dropBareReasoningInputValue(item)
+			if itemChanged {
+				changed = true
+			}
+			if !keep {
+				changed = true
+				continue
+			}
+			out = append(out, cleaned)
+		}
+		return out, changed, true
+	case map[string]any:
+		if strings.TrimSpace(firstNonEmptyAnyString(v["type"])) == "reasoning" &&
+			firstNonEmptyAnyString(v["encrypted_content"]) == "" {
+			return nil, true, false
+		}
+		return v, false, true
+	default:
+		return value, false, true
+	}
 }
 
 func normalizeResponsesInputFileFields(item map[string]any) bool {
@@ -1369,6 +1430,41 @@ func normalizeResponsesFunctionTools(body map[string]any) bool {
 	return modified
 }
 
+func normalizeResponsesToolChoice(body map[string]any) bool {
+	rawChoice, ok := body["tool_choice"]
+	if !ok {
+		return false
+	}
+	choice, ok := rawChoice.(map[string]any)
+	if !ok {
+		return false
+	}
+
+	modified := false
+	toolType := strings.TrimSpace(firstNonEmptyAnyString(choice["type"]))
+	function, _ := choice["function"].(map[string]any)
+	name := strings.TrimSpace(firstNonEmptyAnyString(choice["name"]))
+	if toolType == "" && (function != nil || name != "") {
+		choice["type"] = "function"
+		toolType = "function"
+		modified = true
+	}
+	if toolType != "function" {
+		return modified
+	}
+	if name == "" && function != nil {
+		if nestedName := strings.TrimSpace(firstNonEmptyAnyString(function["name"])); nestedName != "" {
+			choice["name"] = nestedName
+			modified = true
+		}
+	}
+	if function != nil {
+		delete(choice, "function")
+		modified = true
+	}
+	return modified
+}
+
 type responsesBodyPrepareOptions struct {
 	forceStoreFalse            bool
 	expandPreviousResponse     bool
@@ -1456,6 +1552,7 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 	}
 	normalizeResponsesStructuredOutputFormat(body)
 	normalizeResponsesFunctionTools(body)
+	normalizeResponsesToolChoice(body)
 	normalizeResponsesWebSearchTools(body)
 
 	// 5. 工具描述补充 + schema 清理 + 上游数量限制
@@ -1516,6 +1613,7 @@ func prepareResponsesBodyWithOptions(rawBody []byte, opts responsesBodyPrepareOp
 	normalizeResponsesContentPartTypes(body)
 	normalizeResponsesInputMessageContent(body)
 	normalizeResponsesInputItemIDs(body)
+	dropBareReasoningInputItems(body)
 
 	// 保存展开后的 input 原始 JSON（用于响应缓存链路）
 	var expandedInputRaw string
@@ -1582,6 +1680,7 @@ func PrepareOpenAIResponsesBody(rawBody []byte) []byte {
 
 	normalizeResponsesStructuredOutputFormat(body)
 	normalizeResponsesFunctionTools(body)
+	normalizeResponsesToolChoice(body)
 	normalizeResponsesContentPartTypes(body)
 	normalizeResponsesInputMessageContent(body)
 	if shouldInjectOpenAIResponsesImageGenerationTool(body) {
