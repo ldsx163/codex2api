@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -217,12 +218,31 @@ func accountFilterForModel(model string) auth.AccountFilter {
 	}
 }
 
+// marshalModelMapping 将 map[string]string 转换为 JSON string
+func marshalModelMapping(m map[string]string) string {
+	if m == nil {
+		return ""
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 func accountFilterForResponsesModel(model string, allowCodexAccounts bool) auth.AccountFilter {
 	model = strings.TrimSpace(model)
 	codexFilter := accountFilterForModel(model)
 	return func(account *auth.Account) bool {
 		if account == nil {
 			return false
+		}
+		// MiMo 账号直接放行
+		if IsMimoAccount(account.UpstreamType, account.BaseURL, account.APIKey) {
+			if model != "" && account.IsModelRateLimited(model) {
+				return false
+			}
+			return true
 		}
 		if account.IsOpenAIResponsesAPI() {
 			return account.SupportsOpenAIResponsesModel(model) && (model == "" || !account.IsModelRateLimited(model))
@@ -611,24 +631,6 @@ func rawRequestBodyFromContext(c *gin.Context) ([]byte, bool) {
 		return []byte(body), true
 	default:
 		return nil, false
-	}
-}
-
-func readRawRequestBody(c *gin.Context) ([]byte, error) {
-	if body, ok := rawRequestBodyFromContext(c); ok {
-		return body, nil
-	}
-	body, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		return nil, err
-	}
-	setRawRequestBody(c, body)
-	return body, nil
-}
-
-func setRawRequestBody(c *gin.Context, body []byte) {
-	if c != nil {
-		c.Set("raw_body", body)
 	}
 }
 
@@ -1357,7 +1359,7 @@ func firstGJSONInt(body []byte, paths ...string) int64 {
 // Responses 处理 /v1/responses 请求（原生透传，增强输入验证）
 func (h *Handler) Responses(c *gin.Context) {
 	// 1. 读取请求体
-	rawBody, err := readRawRequestBody(c)
+	rawBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
@@ -1365,7 +1367,7 @@ func (h *Handler) Responses(c *gin.Context) {
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
-	setRawRequestBody(c, rawBody)
+	c.Set("raw_body", rawBody)
 
 	// Validate request
 	validator := api.NewValidator(rawBody)
@@ -1499,6 +1501,36 @@ func (h *Handler) Responses(c *gin.Context) {
 
 		// 透传下游请求头用于指纹学习
 		downstreamHeaders := c.Request.Header.Clone()
+
+		// ============================================================
+		// MiMo 上游路由
+		// ============================================================
+		// 方式1: 账号级别配置（推荐）- 支持 base_url 自动检测
+		if IsMimoAccount(account.UpstreamType, account.BaseURL, account.APIKey) {
+			mimoCfg := &MimoUpstreamConfig{
+				BaseURL:      account.BaseURL,
+				APIKey:       account.APIKey,
+				IsTokenPlan:  IsMimoTokenPlanKey(account.APIKey),
+				ModelMapping: marshalModelMapping(account.ModelMapping),
+			}
+			HandleMimoResponsesAPI(c, rawBody, mimoCfg)
+			return
+		}
+
+		// 方式2: 根据模型名称自动检测 + 全局环境变量
+		if IsMimoModel(model) {
+			apiKey := os.Getenv("MIMO_API_KEY")
+			if apiKey != "" {
+				mimoCfg := &MimoUpstreamConfig{
+					BaseURL:     os.Getenv("MIMO_BASE_URL"),
+					APIKey:      apiKey,
+					IsTokenPlan: IsMimoTokenPlanKey(apiKey),
+				}
+				HandleMimoResponsesAPI(c, rawBody, mimoCfg)
+				return
+			}
+		}
+		// ============================================================
 
 		if account.IsOpenAIResponsesAPI() {
 			if lastUpstreamCancel != nil {
@@ -2251,7 +2283,7 @@ func (h *Handler) Responses(c *gin.Context) {
 // ResponsesCompact 处理 /v1/responses/compact 请求（非流式压缩接口，透传到上游 /responses/compact）
 func (h *Handler) ResponsesCompact(c *gin.Context) {
 	// 1. 读取请求体
-	rawBody, err := readRawRequestBody(c)
+	rawBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
@@ -2259,7 +2291,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 	supportedModels := h.supportedModelIDs(c.Request.Context())
 	rawBody, requestModel, mappedModel, mappingApplied := h.applyConfiguredModelMappingToBody(rawBody, supportedModels)
-	setRawRequestBody(c, rawBody)
+	c.Set("raw_body", rawBody)
 
 	// Validate request
 	validator := api.NewValidator(rawBody)
@@ -2665,7 +2697,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 func (h *Handler) ChatCompletions(c *gin.Context) {
 	// 1. 读取请求体
-	rawBody, err := readRawRequestBody(c)
+	rawBody, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		api.SendError(c, api.NewAPIError(api.ErrCodeInvalidRequest, "Failed to read request body", api.ErrorTypeInvalidRequest))
 		return
@@ -2816,6 +2848,34 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 
 		// 透传下游请求头用于指纹学习
 		downstreamHeaders := c.Request.Header.Clone()
+
+		// ============================================================
+		// MiMo Chat Completions 路由
+		// ============================================================
+		if IsMimoAccount(account.UpstreamType, account.BaseURL, account.APIKey) {
+			mimoCfg := &MimoUpstreamConfig{
+				BaseURL:      account.BaseURL,
+				APIKey:       account.APIKey,
+				IsTokenPlan:  IsMimoTokenPlanKey(account.APIKey),
+				ModelMapping: marshalModelMapping(account.ModelMapping),
+			}
+			HandleMimoChatCompletionsAPI(c, rawBody, mimoCfg)
+			return
+		}
+
+		if IsMimoModel(model) {
+			apiKey := os.Getenv("MIMO_API_KEY")
+			if apiKey != "" {
+				mimoCfg := &MimoUpstreamConfig{
+					BaseURL:     os.Getenv("MIMO_BASE_URL"),
+					APIKey:      apiKey,
+					IsTokenPlan: IsMimoTokenPlanKey(apiKey),
+				}
+				HandleMimoChatCompletionsAPI(c, rawBody, mimoCfg)
+				return
+			}
+		}
+		// ============================================================
 
 		upstreamSessionID := IsolateCodexSessionID(apiKeyID, sessionID)
 		if useWebsocket && explicitSessionID == "" {
@@ -3804,7 +3864,7 @@ func parseCodexUsageHeaders(resp *http.Response, account *auth.Account) (float64
 	// 写入 5h
 	if w5h.valid {
 		resetAt := now.Add(time.Duration(w5h.resetSec) * time.Second)
-		account.SetUsageSnapshot5hAt(w5h.usedPct, resetAt, now)
+		account.SetUsageSnapshot5h(w5h.usedPct, resetAt)
 	}
 
 	// 写入 7d
