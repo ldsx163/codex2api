@@ -1510,14 +1510,22 @@ func (h *Handler) Responses(c *gin.Context) {
 			if isStream {
 				ttftGuard = newFirstTokenTimeoutGuard(currentFirstTokenTimeout(), upstreamCancel)
 			}
+			stopTTFTGuard := func() {
+				if ttftGuard != nil {
+					ttftGuard.Stop()
+				}
+			}
+			ttftTimedOut := func() bool {
+				return ttftGuard != nil && ttftGuard.TimedOut()
+			}
 			baseURL, _ := account.OpenAIResponsesCredentials()
 			upstreamEndpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 			resp, reqErr := ExecuteOpenAIResponsesRequest(upstreamCtx, account, openAIResponsesBody, proxyURL, downstreamHeaders)
 			durationMs := int(time.Since(start).Milliseconds())
 
 			if reqErr != nil {
-				timedOut := ttftGuard.TimedOut()
-				ttftGuard.Stop()
+				timedOut := ttftTimedOut()
+				stopTTFTGuard()
 				if timedOut {
 					reqErr = firstTokenTimeoutError(currentFirstTokenTimeout())
 				}
@@ -1554,11 +1562,11 @@ func (h *Handler) Responses(c *gin.Context) {
 				return
 			}
 			if !isStream {
-				ttftGuard.Stop()
+				stopTTFTGuard()
 			}
 
 			if resp.StatusCode != http.StatusOK {
-				ttftGuard.Stop()
+				stopTTFTGuard()
 				errBody, _ := io.ReadAll(resp.Body)
 				resp.Body.Close()
 
@@ -2359,7 +2367,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		if account == nil {
 			account, stickyProxyURL = h.store.WaitForSessionAvailableWithFilter(c.Request.Context(), affinityKey, 30*time.Second, apiKeyID, excludeAccounts, accountFilter)
 			if account == nil {
-				if lastStatusCode == http.StatusTooManyRequests && len(lastBody) > 0 {
+				if (lastStatusCode == http.StatusTooManyRequests || lastStatusCode == http.StatusBadGateway) && len(lastBody) > 0 {
 					h.sendFinalUpstreamError(c, lastStatusCode, lastBody)
 					return
 				}
@@ -2472,11 +2480,52 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 				return
 			}
 
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				totalDuration := int(time.Since(start).Milliseconds())
+				kind := classifyTransportFailure(readErr)
+				if kind == "" {
+					kind = "transport"
+				}
+				h.store.ReportRequestFailure(account, kind, time.Duration(totalDuration)*time.Millisecond)
+				h.store.Release(account)
+				h.store.UnbindSessionAffinity(affinityKey, account.ID())
+				excludeAccounts[account.ID()] = true
+
+				shouldRetry := shouldRetryRequestError(readErr, &generalRetries, maxRetries)
+				usageTiers := resolveUsageServiceTiers("", serviceTier)
+				h.logUsageForRequest(c, &database.UsageLogInput{
+					AccountID:            account.ID(),
+					Endpoint:             "/v1/responses/compact",
+					Model:                logModel,
+					EffectiveModel:       logEffectiveModel,
+					StatusCode:           http.StatusBadGateway,
+					DurationMs:           totalDuration,
+					ReasoningEffort:      reasoningEffort,
+					InboundEndpoint:      "/v1/responses/compact",
+					UpstreamEndpoint:     upstreamEndpoint,
+					ServiceTier:          usageTiers.ServiceTier,
+					RequestedServiceTier: usageTiers.RequestedServiceTier,
+					ActualServiceTier:    usageTiers.ActualServiceTier,
+					BillingServiceTier:   usageTiers.BillingServiceTier,
+					IsRetryAttempt:       shouldRetry,
+					AttemptIndex:         attempt + 1,
+					UpstreamErrorKind:    kind,
+					ErrorMessage:         fmt.Sprintf("上游响应读取失败: %v", readErr),
+				})
+				log.Printf("OpenAI Responses compact 上游响应读取失败 (attempt %d): %v", attempt+1, readErr)
+				if shouldRetry {
+					lastStatusCode = http.StatusBadGateway
+					lastBody = []byte(fmt.Sprintf("Failed to read upstream response: %v", readErr))
+					continue
+				}
+				api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeUpstreamError, "Failed to read upstream response", api.ErrorTypeUpstream), http.StatusBadGateway)
+				return
+			}
+
 			h.store.ClearModelCooldown(account, effectiveModel)
 			h.store.ReportRequestSuccess(account, time.Duration(durationMs)*time.Millisecond)
-
-			respBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
 
 			promptTokens := int(gjson.GetBytes(respBody, "usage.input_tokens").Int())
 			completionTokens := int(gjson.GetBytes(respBody, "usage.output_tokens").Int())
@@ -2617,11 +2666,53 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 		}
 
 		// 成功：直接透传响应体
+		respBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			totalDuration := int(time.Since(start).Milliseconds())
+			kind := classifyTransportFailure(readErr)
+			if kind == "" {
+				kind = "transport"
+			}
+			h.store.ReportRequestFailure(account, kind, time.Duration(totalDuration)*time.Millisecond)
+			SyncCodexUsageState(h.store, account, resp)
+			h.store.Release(account)
+			h.store.UnbindSessionAffinity(affinityKey, account.ID())
+			excludeAccounts[account.ID()] = true
+
+			shouldRetry := shouldRetryRequestError(readErr, &generalRetries, maxRetries)
+			usageTiers := resolveUsageServiceTiers("", serviceTier)
+			h.logUsageForRequest(c, &database.UsageLogInput{
+				AccountID:            account.ID(),
+				Endpoint:             "/v1/responses/compact",
+				Model:                logModel,
+				EffectiveModel:       logEffectiveModel,
+				StatusCode:           http.StatusBadGateway,
+				DurationMs:           totalDuration,
+				ReasoningEffort:      reasoningEffort,
+				InboundEndpoint:      "/v1/responses/compact",
+				UpstreamEndpoint:     "/v1/responses/compact",
+				ServiceTier:          usageTiers.ServiceTier,
+				RequestedServiceTier: usageTiers.RequestedServiceTier,
+				ActualServiceTier:    usageTiers.ActualServiceTier,
+				BillingServiceTier:   usageTiers.BillingServiceTier,
+				IsRetryAttempt:       shouldRetry,
+				AttemptIndex:         attempt + 1,
+				UpstreamErrorKind:    kind,
+				ErrorMessage:         fmt.Sprintf("上游响应读取失败: %v", readErr),
+			})
+			log.Printf("compact 上游响应读取失败 (attempt %d): %v", attempt+1, readErr)
+			if shouldRetry {
+				lastStatusCode = http.StatusBadGateway
+				lastBody = []byte(fmt.Sprintf("Failed to read upstream response: %v", readErr))
+				continue
+			}
+			api.SendErrorWithStatus(c, api.NewAPIError(api.ErrCodeUpstreamError, "Failed to read upstream response", api.ErrorTypeUpstream), http.StatusBadGateway)
+			return
+		}
+
 		SyncCodexUsageState(h.store, account, resp)
 		h.store.ClearModelCooldown(account, effectiveModel)
-
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
 
 		// 提取 usage 用于日志
 		promptTokens := int(gjson.GetBytes(respBody, "usage.input_tokens").Int())
@@ -2657,6 +2748,7 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 			BillingServiceTier:   usageTiers.BillingServiceTier,
 		})
 
+		h.store.ReportRequestSuccess(account, time.Duration(totalDuration)*time.Millisecond)
 		h.store.Release(account)
 		c.Data(http.StatusOK, "application/json", respBody)
 		return

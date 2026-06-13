@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -32,7 +33,17 @@ func sendAnthropicError(c *gin.Context, statusCode int, errType, message string)
 
 // sendAnthropicStreamError 在流式模式中发送错误事件
 func sendAnthropicStreamError(c *gin.Context, errType, message string) {
-	fmt.Fprintf(c.Writer, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"%s\",\"message\":\"%s\"}}\n\n", errType, message)
+	payload, err := json.Marshal(gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    errType,
+			"message": message,
+		},
+	})
+	if err != nil {
+		payload = []byte(`{"type":"error","error":{"type":"api_error","message":"failed to encode stream error"}}`)
+	}
+	fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", payload)
 	if flusher, ok := c.Writer.(http.Flusher); ok {
 		flusher.Flush()
 	}

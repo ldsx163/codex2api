@@ -2,10 +2,45 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
+
+func TestSendAnthropicStreamErrorEscapesJSON(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+
+	sendAnthropicStreamError(c, "api_error", "bad \"quote\"\\slash\nand control \x01")
+
+	body := recorder.Body.String()
+	if !strings.HasPrefix(body, "event: error\ndata: ") || !strings.HasSuffix(body, "\n\n") {
+		t.Fatalf("unexpected SSE frame: %q", body)
+	}
+	data := strings.TrimSuffix(strings.TrimPrefix(body, "event: error\ndata: "), "\n\n")
+
+	var payload struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		t.Fatalf("stream error data is not valid JSON: %v; data=%q", err, data)
+	}
+	if payload.Type != "error" || payload.Error.Type != "api_error" {
+		t.Fatalf("unexpected payload metadata: %+v", payload)
+	}
+	wantMessage := "bad \"quote\"\\slash\nand control \x01"
+	if payload.Error.Message != wantMessage {
+		t.Fatalf("message = %q, want %q", payload.Error.Message, wantMessage)
+	}
+}
 
 func TestTranslateAnthropicToCodex_OutputConfigEffortTakesPrecedence(t *testing.T) {
 	raw := []byte(`{
