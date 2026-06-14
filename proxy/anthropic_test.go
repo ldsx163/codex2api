@@ -308,6 +308,30 @@ func TestSanitizeToolInputJSON(t *testing.T) {
 			want:     `{"file_path":"/etc/hosts"}`,
 		},
 		{
+			name:     "enter worktree drops empty name when path is set",
+			toolName: "EnterWorktree",
+			in:       `{"name":"","path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+			want:     `{"path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+		},
+		{
+			name:     "enter worktree drops empty path when name is set",
+			toolName: "EnterWorktree",
+			in:       `{"name":"feature-x","path":""}`,
+			want:     `{"name":"feature-x"}`,
+		},
+		{
+			name:     "enter worktree preserves both non-empty mutually exclusive fields",
+			toolName: "EnterWorktree",
+			in:       `{"name":"feature-x","path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+			want:     `{"name":"feature-x","path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+		},
+		{
+			name:     "enter worktree preserves both empty fields",
+			toolName: "EnterWorktree",
+			in:       `{"name":"","path":""}`,
+			want:     `{"name":"","path":""}`,
+		},
+		{
 			name:     "invalid JSON returned as-is",
 			toolName: "Read",
 			in:       `{"file_path":`,
@@ -376,6 +400,18 @@ func TestBuildAnthropicResponseFromCompletedPreservesToolInputByToolName(t *test
 			toolName:  "Write",
 			arguments: `{"file_path":"/tmp/empty.txt","content":""}`,
 			wantInput: `{"file_path":"/tmp/empty.txt","content":""}`,
+		},
+		{
+			name:      "enter worktree drops empty name when path is set",
+			toolName:  "EnterWorktree",
+			arguments: `{"name":"","path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+			wantInput: `{"path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+		},
+		{
+			name:      "enter worktree preserves both non-empty mutually exclusive fields",
+			toolName:  "EnterWorktree",
+			arguments: `{"name":"feature-x","path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+			wantInput: `{"name":"feature-x","path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
 		},
 	}
 
@@ -454,6 +490,26 @@ func TestAnthropicStreamTranslator_ToolInputBufferedAndCleaned(t *testing.T) {
 				`}`,
 			},
 			wantInput: `{"file_path":"/tmp/empty.txt","content":""}`,
+		},
+		{
+			name:     "enter worktree drops empty name when path is set",
+			toolName: "EnterWorktree",
+			deltas: []string{
+				`{"name":""`,
+				`,"path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"`,
+				`}`,
+			},
+			wantInput: `{"path":"F:\\Github\\codex2api\\.claude\\worktrees\\existing"}`,
+		},
+		{
+			name:     "enter worktree drops empty path when name is set",
+			toolName: "EnterWorktree",
+			deltas: []string{
+				`{"name":"feature-x"`,
+				`,"path":""`,
+				`}`,
+			},
+			wantInput: `{"name":"feature-x"}`,
 		},
 	}
 

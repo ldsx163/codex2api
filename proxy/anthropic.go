@@ -881,31 +881,6 @@ func (t *anthropicStreamTranslator) closeCurrentBlock() []anthropicStreamEvent {
 	return events
 }
 
-// sanitizeToolInputJSON 清洗工具调用 arguments JSON。
-// 只处理 Claude Code Read 工具已知兼容问题：上游 gpt-5.5 偶尔会给
-// Read 工具加 "pages":""，导致 claudecode 看到无效空字段。
-// 其他工具的空字符串和 null 参数可能有合法语义，不能泛化删除。
-func sanitizeToolInputJSON(toolName string, raw string) string {
-	raw = strings.TrimSpace(raw)
-	if toolName != "Read" || raw == "" {
-		return raw
-	}
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
-		return raw
-	}
-	pages, ok := obj["pages"]
-	if !ok || strings.TrimSpace(string(pages)) != `""` {
-		return raw
-	}
-	delete(obj, "pages")
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return raw
-	}
-	return string(out)
-}
-
 // finalize 在流结束时补齐缺失的事件
 func (t *anthropicStreamTranslator) finalize() []anthropicStreamEvent {
 	var events []anthropicStreamEvent
