@@ -251,6 +251,9 @@ func (h *Handler) ExchangeOAuthCode(c *gin.Context) {
 		expiresIn:    tokenResp.ExpiresIn,
 	})
 
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
+	defer cancel()
+
 	name := strings.TrimSpace(req.Name)
 	if name == "" && seed.email != "" {
 		name = seed.email
@@ -259,33 +262,13 @@ func (h *Handler) ExchangeOAuthCode(c *gin.Context) {
 		name = "oauth-account"
 	}
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
-	defer cancel()
-
-	id, err := h.db.InsertAccount(ctx, name, tokenResp.RefreshToken, proxyURL)
+	id, updated, err := h.upsertOAuthIdentityAccount(ctx, name, proxyURL, seed, "oauth")
 	if err != nil {
 		writeError(c, http.StatusInternalServerError, "账号写入数据库失败: "+err.Error())
 		return
 	}
-	if err := h.db.UpdateCredentials(ctx, id, tokenCredentialMap(seed)); err != nil {
-		writeError(c, http.StatusInternalServerError, "Token 写入数据库失败: "+err.Error())
-		return
-	}
-	h.db.InsertAccountEventAsync(id, "added", "oauth")
-
-	// Resin 租约继承
-	if proxy.IsResinEnabled() {
+	if proxy.IsResinEnabled() && !updated {
 		go proxy.InheritLease(resinTempID, fmt.Sprintf("%d", id))
-	}
-
-	newAcc := accountFromCredentialSeed(id, proxyURL, seed)
-	h.store.AddAccount(newAcc)
-
-	if newAcc.GetAccessToken() != "" {
-		h.triggerImportedAccountUsageProbe(id, "oauth")
-	} else if !h.store.GetLazyMode() {
-		// 异步刷新 AT，刷新成功后立即做 wham 用量采样。
-		go h.refreshImportedAccountAndProbe(id, "oauth_refresh")
 	}
 
 	email := ""
@@ -301,12 +284,116 @@ func (h *Handler) ExchangeOAuthCode(c *gin.Context) {
 		planType = seed.planType
 	}
 
+	message := fmt.Sprintf("OAuth 账号 %s 添加成功", name)
+	if updated {
+		message = fmt.Sprintf("OAuth 账号已存在，已更新账号 %d", id)
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"message":   fmt.Sprintf("OAuth 账号 %s 添加成功", name),
+		"message":   message,
 		"id":        id,
 		"email":     email,
 		"plan_type": planType,
+		"updated":   updated,
 	})
+}
+
+var errDuplicateOAuthIdentity = errors.New("duplicate oauth identity")
+
+func oauthIdentityDuplicateMessage(id int64) string {
+	return fmt.Sprintf("OAuth 账号已存在 (id=%d)，请更新已有账号", id)
+}
+
+func (h *Handler) findOAuthIdentityDuplicate(ctx context.Context, seed tokenCredentialSeed, excludeID int64) (int64, error) {
+	if h == nil || h.db == nil {
+		return 0, nil
+	}
+	seed = normalizeTokenCredentialSeed(seed)
+	if seed.email == "" || seed.accountID == "" {
+		return 0, nil
+	}
+	id, err := h.db.FindActiveAccountByOAuthIdentity(ctx, seed.email, seed.accountID, excludeID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return id, nil
+}
+
+func (h *Handler) upsertOAuthIdentityAccount(ctx context.Context, name, proxyURL string, seed tokenCredentialSeed, source string) (int64, bool, error) {
+	seed = normalizeTokenCredentialSeed(seed)
+	if seed.email == "" || seed.accountID == "" {
+		id, err := h.db.InsertAccountWithCredentials(ctx, name, tokenCredentialMap(seed), proxyURL)
+		if err != nil {
+			return 0, false, err
+		}
+		h.db.InsertAccountEventAsync(id, "added", source)
+		h.loadInsertedTokenAccount(id, proxyURL, seed, source)
+		return id, false, nil
+	}
+
+	if duplicateID, err := h.findOAuthIdentityDuplicate(ctx, seed, 0); err != nil {
+		return 0, false, err
+	} else if duplicateID > 0 {
+		effectiveProxyURL := strings.TrimSpace(proxyURL)
+		if effectiveProxyURL == "" {
+			row, err := h.db.GetAccountByID(ctx, duplicateID)
+			if err != nil {
+				return 0, false, err
+			}
+			effectiveProxyURL = strings.TrimSpace(row.ProxyURL)
+		}
+		if err := h.db.UpdateOAuthAccountCredentials(ctx, duplicateID, tokenCredentialMap(seed), effectiveProxyURL); err != nil {
+			return 0, false, err
+		}
+		if err := h.reloadTokenAccount(ctx, duplicateID, source); err != nil {
+			return 0, false, err
+		}
+		h.db.InsertAccountEventAsync(duplicateID, "updated", source)
+		return duplicateID, true, nil
+	}
+
+	id, err := h.db.InsertAccountWithCredentials(ctx, name, tokenCredentialMap(seed), proxyURL)
+	if err != nil {
+		return 0, false, err
+	}
+	h.db.InsertAccountEventAsync(id, "added", source)
+	h.loadInsertedTokenAccount(id, proxyURL, seed, source)
+	return id, false, nil
+}
+
+func (h *Handler) loadInsertedTokenAccount(id int64, proxyURL string, seed tokenCredentialSeed, source string) {
+	if h == nil || h.store == nil {
+		return
+	}
+	newAcc := accountFromCredentialSeed(id, proxyURL, seed)
+	h.store.AddAccount(newAcc)
+	h.triggerTokenAccountProbe(id, source)
+}
+
+func (h *Handler) reloadTokenAccount(ctx context.Context, id int64, source string) error {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	h.store.RemoveAccount(id)
+	if err := h.store.LoadAccountByID(ctx, id); err != nil {
+		log.Printf("更新账号 %d 后重新加载运行时失败: %v", id, err)
+		return err
+	}
+	h.triggerTokenAccountProbe(id, source)
+	return nil
+}
+
+func (h *Handler) triggerTokenAccountProbe(id int64, source string) {
+	if h == nil || h.store == nil {
+		return
+	}
+	if account := h.store.FindByID(id); account != nil && account.GetAccessToken() != "" {
+		h.triggerImportedAccountUsageProbe(id, source)
+	} else if !h.store.GetLazyMode() && !strings.HasPrefix(source, "import") {
+		go h.refreshImportedAccountAndProbe(id, source+"_refresh")
+	}
 }
 
 // UpdateOAuthAccountCode 用授权码更新已有 OAuth 账号的授权参数。
@@ -394,6 +481,13 @@ func (h *Handler) UpdateOAuthAccountCode(c *gin.Context) {
 		idToken:      tokenResp.IDToken,
 		expiresIn:    tokenResp.ExpiresIn,
 	})
+	if duplicateID, err := h.findOAuthIdentityDuplicate(ctx, seed, id); err != nil {
+		writeInternalError(c, err)
+		return
+	} else if duplicateID > 0 {
+		writeError(c, http.StatusConflict, oauthIdentityDuplicateMessage(duplicateID))
+		return
+	}
 	if err := h.db.UpdateOAuthAccountCredentials(ctx, id, tokenCredentialMap(seed), proxyURL); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeError(c, http.StatusNotFound, "账号不存在")
@@ -403,22 +497,11 @@ func (h *Handler) UpdateOAuthAccountCode(c *gin.Context) {
 		return
 	}
 
-	if h.store != nil {
-		h.store.RemoveAccount(id)
-		if err := h.store.LoadAccountByID(ctx, id); err != nil {
-			writeError(c, http.StatusInternalServerError, "重新加载运行时账号失败: "+err.Error())
-			return
-		}
+	if err := h.reloadTokenAccount(ctx, id, "oauth_reauth"); err != nil {
+		writeError(c, http.StatusInternalServerError, "重新加载运行时账号失败: "+err.Error())
+		return
 	}
 	h.db.InsertAccountEventAsync(id, "updated", "oauth_reauth")
-
-	if h.store != nil {
-		if account := h.store.FindByID(id); account != nil && account.GetAccessToken() != "" {
-			h.triggerImportedAccountUsageProbe(id, "oauth_reauth")
-		} else if !h.store.GetLazyMode() {
-			go h.refreshImportedAccountAndProbe(id, "oauth_reauth_refresh")
-		}
-	}
 
 	email := ""
 	planType := ""
@@ -578,7 +661,7 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 
-	id, err := h.db.InsertAccount(ctx, name, tokenResp.RefreshToken, proxyURL)
+	id, updated, err := h.upsertOAuthIdentityAccount(ctx, name, proxyURL, seed, "oauth_callback")
 	if err != nil {
 		sess.ExchangeResult = &oauthExchangeResult{
 			Success: false,
@@ -587,29 +670,9 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 		c.String(http.StatusOK, oauthCallbackPage("授权失败", "写入数据库失败: "+err.Error(), false))
 		return
 	}
-	if err := h.db.UpdateCredentials(ctx, id, tokenCredentialMap(seed)); err != nil {
-		sess.ExchangeResult = &oauthExchangeResult{
-			Success: false,
-			Error:   "Token 写入数据库失败: " + err.Error(),
-		}
-		c.String(http.StatusOK, oauthCallbackPage("授权失败", "写入 token 失败: "+err.Error(), false))
-		return
-	}
-	h.db.InsertAccountEventAsync(id, "added", "oauth_callback")
 
-	// Resin 租约继承：将临时身份的 IP 租约迁移到正式 DBID
-	if proxy.IsResinEnabled() {
+	if proxy.IsResinEnabled() && !updated {
 		go proxy.InheritLease(resinTempID, fmt.Sprintf("%d", id))
-	}
-
-	newAcc := accountFromCredentialSeed(id, proxyURL, seed)
-	h.store.AddAccount(newAcc)
-
-	if newAcc.GetAccessToken() != "" {
-		h.triggerImportedAccountUsageProbe(id, "oauth_callback")
-	} else if !h.store.GetLazyMode() {
-		// 异步刷新 AT，刷新成功后立即做 wham 用量采样。
-		go h.refreshImportedAccountAndProbe(id, "oauth_callback_refresh")
 	}
 
 	email := ""
@@ -625,16 +688,22 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 		planType = seed.planType
 	}
 
+	message := fmt.Sprintf("账号 %s 添加成功", name)
+	pageMessage := fmt.Sprintf("账号 %s 已自动添加，可以关闭此页面。", name)
+	if updated {
+		message = fmt.Sprintf("账号已存在，已更新账号 %d", id)
+		pageMessage = fmt.Sprintf("账号已存在，已更新账号 %d，可以关闭此页面。", id)
+	}
 	sess.ExchangeResult = &oauthExchangeResult{
 		Success:  true,
-		Message:  fmt.Sprintf("账号 %s 添加成功", name),
+		Message:  message,
 		ID:       id,
 		Email:    email,
 		PlanType: planType,
 	}
 
 	log.Printf("OAuth 回调自动添加账号成功: id=%d email=%s", id, email)
-	c.String(http.StatusOK, oauthCallbackPage("授权成功", fmt.Sprintf("账号 %s 已自动添加，可以关闭此页面。", name), true))
+	c.String(http.StatusOK, oauthCallbackPage("授权成功", pageMessage, true))
 }
 
 // PollOAuthCallback 前端轮询回调结果

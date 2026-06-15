@@ -1844,6 +1844,83 @@ func TestForceUsageProbeTriggersInLazyMode(t *testing.T) {
 	}
 }
 
+func TestRestoreAccountRejectsDuplicateOAuthIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	handler := &Handler{db: db}
+
+	activeID, err := db.InsertAccountWithCredentials(context.Background(), "active", map[string]interface{}{
+		"refresh_token": "rt-active",
+		"email":         "restore@example.com",
+		"account_id":    "acc-restore",
+	}, "")
+	if err != nil {
+		t.Fatalf("Insert active: %v", err)
+	}
+	deletedID, err := db.InsertAccountWithCredentials(context.Background(), "deleted", map[string]interface{}{
+		"refresh_token": "rt-deleted",
+		"email":         "Restore@Example.com",
+		"account_id":    "acc-restore",
+	}, "")
+	if err != nil {
+		t.Fatalf("Insert deleted: %v", err)
+	}
+	if err := db.SoftDeleteAccount(context.Background(), deletedID); err != nil {
+		t.Fatalf("SoftDeleteAccount: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", deletedID)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/accounts/%d/restore", deletedID), nil)
+
+	handler.RestoreAccount(ctx)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), fmt.Sprintf("%d", activeID)) {
+		t.Fatalf("response = %s, want active duplicate id %d", recorder.Body.String(), activeID)
+	}
+	if _, err := db.GetAccountByID(context.Background(), deletedID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("deleted account should remain outside active pool, err=%v", err)
+	}
+}
+
+func TestRestoreAccountReportsRuntimeLoadFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	handler := &Handler{db: db, store: store}
+
+	deletedID, err := db.InsertAccountWithCredentials(context.Background(), "deleted-empty", map[string]interface{}{}, "")
+	if err != nil {
+		t.Fatalf("Insert deleted-empty: %v", err)
+	}
+	if err := db.SoftDeleteAccount(context.Background(), deletedID); err != nil {
+		t.Fatalf("SoftDeleteAccount: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", deletedID)}}
+	ctx.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/admin/accounts/%d/restore", deletedID), nil)
+
+	handler.RestoreAccount(ctx)
+
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusInternalServerError, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "加载运行时失败") {
+		t.Fatalf("response = %s, want runtime load failure", recorder.Body.String())
+	}
+	if account := store.FindByID(deletedID); account != nil {
+		t.Fatalf("account %d should not be in runtime store", deletedID)
+	}
+}
+
 func newTestAdminDB(t *testing.T) *database.DB {
 	t.Helper()
 

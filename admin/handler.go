@@ -1775,6 +1775,21 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 			name = fmt.Sprintf("%s-%d", req.Name, i+1)
 		}
 
+		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
+			accessToken: at,
+		})
+		if seed.email != "" && seed.accountID != "" {
+			id, _, err := h.upsertOAuthIdentityAccount(ctx, name, req.ProxyURL, seed, "manual_at")
+			if err != nil {
+				log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
+				failCount++
+				continue
+			}
+			successCount++
+			log.Printf("AT 账号 %d 已加入或更新号池 (id=%d)", i+1, id)
+			continue
+		}
+
 		id, err := h.db.InsertATAccount(ctx, name, at, req.ProxyURL)
 		if err != nil {
 			log.Printf("添加 AT 账号 %d 失败: %v", i+1, err)
@@ -2391,6 +2406,26 @@ func importTokenCredentialIdentity(t importToken) string {
 	}
 }
 
+func importCredentialFingerprint(refreshToken, sessionToken, accessToken string) string {
+	return strings.TrimSpace(refreshToken) + "\x00" + strings.TrimSpace(sessionToken) + "\x00" + strings.TrimSpace(accessToken)
+}
+
+func importTokenCredentialFingerprint(t importToken, conflicts map[string]bool) string {
+	seed := importTokenSeed(t, conflicts)
+	return importCredentialFingerprint(seed.refreshToken, seed.sessionToken, seed.accessToken)
+}
+
+func importAccountCredentialFingerprint(row *database.AccountRow) string {
+	if row == nil {
+		return ""
+	}
+	return importCredentialFingerprint(
+		row.GetCredential("refresh_token"),
+		row.GetCredential("session_token"),
+		row.GetCredential("access_token"),
+	)
+}
+
 func conflictingImportChatGPTIDs(tokens []importToken) map[string]bool {
 	identitiesByID := make(map[string]map[string]struct{})
 	for _, t := range tokens {
@@ -2432,6 +2467,38 @@ func importStoredAccountID(t importToken, conflicts map[string]bool) string {
 		return strings.TrimSpace(t.accountID)
 	}
 	return reliableImportChatGPTID(t, conflicts)
+}
+
+func importTokenSeed(t importToken, conflicts map[string]bool) tokenCredentialSeed {
+	return normalizeTokenCredentialSeed(tokenCredentialSeed{
+		refreshToken:          t.refreshToken,
+		sessionToken:          t.sessionToken,
+		accessToken:           t.accessToken,
+		idToken:               t.idToken,
+		accountID:             importStoredAccountID(t, conflicts),
+		email:                 t.email,
+		planType:              t.planType,
+		expiresAtRaw:          t.expiresAt,
+		codex7DUsedPercent:    t.codex7DUsedPercent,
+		codex7DResetAt:        t.codex7DResetAt,
+		codex5HUsedPercent:    t.codex5HUsedPercent,
+		codex5HResetAt:        t.codex5HResetAt,
+		codex5HUsageUpdatedAt: t.codex5HUsageUpdatedAt,
+		codexUsageUpdatedAt:   t.codexUsageUpdatedAt,
+	})
+}
+
+func importTokenOAuthIdentityKey(t importToken, conflicts map[string]bool) string {
+	seed := importTokenSeed(t, conflicts)
+	email := strings.ToLower(strings.TrimSpace(seed.email))
+	accountID := strings.TrimSpace(seed.accountID)
+	if accountID == "" && strings.TrimSpace(t.accountID) == "" {
+		accountID = strings.TrimSpace(t.chatgptAccountID)
+	}
+	if email == "" || accountID == "" {
+		return ""
+	}
+	return email + "\x00" + accountID
 }
 
 // ImportAccounts 批量导入账号（支持 TXT / JSON）
@@ -2671,25 +2738,52 @@ func sendSSEJSON(c *gin.Context, event any) {
 // importAccountsCommon 公共的去重、并发插入、SSE 进度推送逻辑（支持 RT 和 AT-only 混合导入）
 func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, proxyURL string) {
 	// 文件内去重：
-	// 1) 当 chatgpt_account_id 在本批次内与凭据一一对应时，以它作为唯一键。
-	//    如果同一个 chatgpt_account_id 对应多个不同 RT / ST / AT，说明导出工具把非账号唯一字段写进了这里，
-	//    此时把它视为不可靠并回退到 RT / ST / AT 去重。
-	// 2) 没有 chatgpt_account_id 时，退回到 RT / ST / AT 顺序去重（兼容旧导出格式）。
+	// 1) 当条目可解析出 email + account_id 时，以它作为 OAuth 身份键；
+	//    同身份同 RT/ST/AT 折叠，同身份不同 RT/ST/AT 整组跳过，避免任选一个覆盖。
+	// 2) 没有 OAuth 身份时，退回到 RT / ST / AT 顺序去重（兼容旧导出格式）。
 	// 3) 同一份文件内若出现"同一个 RT 对应多个不同 chatgpt_account_id"，
 	//    会被全部保留为独立账号；数据库层面 refresh_token 没有 UNIQUE 约束，因此安全。
 	conflictingChatGPTIDs := conflictingImportChatGPTIDs(tokens)
-	seenChatGPTID := make(map[string]bool)
+	type oauthIdentityImportState struct {
+		count        int
+		fingerprints map[string]struct{}
+	}
+	oauthIdentityStates := make(map[string]*oauthIdentityImportState)
+	for _, t := range tokens {
+		oauthIdentity := importTokenOAuthIdentityKey(t, conflictingChatGPTIDs)
+		if oauthIdentity == "" {
+			continue
+		}
+		state := oauthIdentityStates[oauthIdentity]
+		if state == nil {
+			state = &oauthIdentityImportState{fingerprints: make(map[string]struct{}, 1)}
+			oauthIdentityStates[oauthIdentity] = state
+		}
+		state.count++
+		state.fingerprints[importTokenCredentialFingerprint(t, conflictingChatGPTIDs)] = struct{}{}
+	}
+
+	seenOAuthIdentity := make(map[string]bool)
 	seenRT := make(map[string]bool)
 	seenST := make(map[string]bool)
 	seenAT := make(map[string]bool)
 	var unique []importToken
+	ambiguousOAuthIdentityCount := 0
 	for _, t := range tokens {
-		reliableChatGPTID := reliableImportChatGPTID(t, conflictingChatGPTIDs)
-		if reliableChatGPTID != "" {
-			if seenChatGPTID[reliableChatGPTID] {
+		oauthIdentity := importTokenOAuthIdentityKey(t, conflictingChatGPTIDs)
+		if oauthIdentity != "" {
+			state := oauthIdentityStates[oauthIdentity]
+			if state != nil && len(state.fingerprints) > 1 {
+				if !seenOAuthIdentity[oauthIdentity] {
+					ambiguousOAuthIdentityCount += state.count
+					seenOAuthIdentity[oauthIdentity] = true
+				}
 				continue
 			}
-			seenChatGPTID[reliableChatGPTID] = true
+			if seenOAuthIdentity[oauthIdentity] {
+				continue
+			}
+			seenOAuthIdentity[oauthIdentity] = true
 			if t.refreshToken != "" {
 				seenRT[t.refreshToken] = true
 			}
@@ -2733,7 +2827,11 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 	dedupeCtx, dedupeCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer dedupeCancel()
 
-	log.Printf("导入解析: 文件内 %d 条, 去重后 %d 条（%d 条文件内重复）", len(tokens), len(unique), len(tokens)-len(unique))
+	fileDuplicateCount := len(tokens) - len(unique) - ambiguousOAuthIdentityCount
+	if fileDuplicateCount < 0 {
+		fileDuplicateCount = 0
+	}
+	log.Printf("导入解析: 文件内 %d 条, 去重后 %d 条（%d 条文件内重复，%d 条 OAuth 身份冲突跳过）", len(tokens), len(unique), fileDuplicateCount, ambiguousOAuthIdentityCount)
 
 	existingRTs, err := h.db.GetAllRefreshTokens(dedupeCtx)
 	if err != nil {
@@ -2761,42 +2859,33 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 		}
 	}
 
-	// 当导入条目带 chatgpt_account_id 时，按它查数据库已有账号 —— 这是 ChatGPT 端真实的账号唯一标识。
-	hasChatGPTID := false
-	for _, t := range unique {
-		if reliableImportChatGPTID(t, conflictingChatGPTIDs) != "" {
-			hasChatGPTID = true
-			break
-		}
-	}
-	var existingChatGPTIDs map[string]bool
-	if hasChatGPTID {
-		existingChatGPTIDs, err = h.db.GetAllChatGPTAccountIDs(dedupeCtx)
-		if err != nil {
-			log.Printf("查询已有 chatgpt_account_id 失败: %v", err)
-			existingChatGPTIDs = make(map[string]bool)
-		}
-	}
-
 	var newTokens []importToken
-	duplicateCount := 0
+	duplicateCount := ambiguousOAuthIdentityCount
 	for _, t := range unique {
-		reliableChatGPTID := reliableImportChatGPTID(t, conflictingChatGPTIDs)
-		// 优先按 chatgpt_account_id 判定数据库内是否已存在该账号；
-		// 命中则跳过，避免同一账号被重复导入。
-		if reliableChatGPTID != "" && existingChatGPTIDs[reliableChatGPTID] {
-			duplicateCount++
+		oauthIdentity := importTokenOAuthIdentityKey(t, conflictingChatGPTIDs)
+		if oauthIdentity != "" {
+			seed := importTokenSeed(t, conflictingChatGPTIDs)
+			if duplicateID, err := h.findOAuthIdentityDuplicate(dedupeCtx, seed, 0); err != nil {
+				log.Printf("查询已有 OAuth 身份失败: %v", err)
+			} else if duplicateID > 0 {
+				row, err := h.db.GetAccountByID(dedupeCtx, duplicateID)
+				if err != nil {
+					log.Printf("查询已有 OAuth 账号 %d 失败: %v", duplicateID, err)
+				} else if importAccountCredentialFingerprint(row) == importTokenCredentialFingerprint(t, conflictingChatGPTIDs) {
+					duplicateCount++
+					continue
+				}
+			}
+			newTokens = append(newTokens, t)
 			continue
 		}
 		switch {
 		case t.refreshToken != "":
-			// 已经按 chatgpt_account_id 排除过重复账号；此处仅当条目没有 chatgpt_account_id 时才回退到 RT 去重，
-			// 否则当多个不同账号共享同一 RT（部分导出工具的常见格式）时会被错误判定为重复。
-			if reliableChatGPTID == "" && existingRTs[t.refreshToken] {
+			if existingRTs[t.refreshToken] {
 				duplicateCount++
-			} else if reliableChatGPTID == "" && t.sessionToken != "" && existingSTs[t.sessionToken] {
+			} else if t.sessionToken != "" && existingSTs[t.sessionToken] {
 				duplicateCount++
-			} else if reliableChatGPTID == "" && t.accessToken != "" && existingATs[t.accessToken] {
+			} else if t.accessToken != "" && existingATs[t.accessToken] {
 				duplicateCount++
 			} else {
 				newTokens = append(newTokens, t)
@@ -2818,13 +2907,13 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 		}
 	}
 
-	total := len(unique)
+	total := len(unique) + ambiguousOAuthIdentityCount
 
 	log.Printf("导入去重: 总计 %d 条, 数据库已存在 %d 条, 待导入 %d 条", total, duplicateCount, len(newTokens))
 
 	if len(newTokens) == 0 {
 		c.JSON(http.StatusOK, gin.H{
-			"message":   fmt.Sprintf("所有 %d 个 Token 已存在，无需导入", total),
+			"message":   fmt.Sprintf("所有 %d 个 Token 已存在或已跳过，无需导入", total),
 			"success":   0,
 			"duplicate": duplicateCount,
 			"failed":    0,
@@ -2872,6 +2961,43 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 
 			name := tok.name
 
+			seed := importTokenSeed(tok, conflictingChatGPTIDs)
+			importSource := "import"
+			if tok.accessToken != "" && tok.refreshToken == "" {
+				importSource = "import_at"
+			}
+			if seed.email != "" && seed.accountID != "" {
+				if name == "" {
+					if importSource == "import_at" {
+						name = fmt.Sprintf("at-import-%d", idx+1)
+					} else {
+						name = fmt.Sprintf("import-%d", idx+1)
+					}
+				}
+
+				upsertCtx, upsertCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				id, _, err := h.upsertOAuthIdentityAccount(upsertCtx, name, proxyURL, seed, importSource)
+				upsertCancel()
+				if err != nil {
+					log.Printf("导入账号 %d/%d 更新或写入失败: %v", idx+1, len(newTokens), err)
+					atomic.AddInt64(&failCount, 1)
+					atomic.AddInt64(&current, 1)
+					return
+				}
+
+				atomic.AddInt64(&successCount, 1)
+				atomic.AddInt64(&current, 1)
+				if h.store != nil {
+					if acc := h.store.FindByID(id); acc != nil {
+						h.applyImportedAccountUsageState(acc, importSource)
+						if acc.GetAccessToken() == "" && !h.store.GetLazyMode() {
+							go h.refreshImportedAccountAndProbe(id, importSource+"_refresh")
+						}
+					}
+				}
+				return
+			}
+
 			if tok.accessToken != "" && tok.refreshToken == "" {
 				// AT-only 导入路径
 				if name == "" {
@@ -2893,21 +3019,6 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				atomic.AddInt64(&current, 1)
 				h.db.InsertAccountEventAsync(id, "added", "import_at")
 
-				seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-					sessionToken:          tok.sessionToken,
-					accessToken:           tok.accessToken,
-					idToken:               tok.idToken,
-					accountID:             importStoredAccountID(tok, conflictingChatGPTIDs),
-					email:                 tok.email,
-					planType:              tok.planType,
-					expiresAtRaw:          tok.expiresAt,
-					codex7DUsedPercent:    tok.codex7DUsedPercent,
-					codex7DResetAt:        tok.codex7DResetAt,
-					codex5HUsedPercent:    tok.codex5HUsedPercent,
-					codex5HResetAt:        tok.codex5HResetAt,
-					codex5HUsageUpdatedAt: tok.codex5HUsageUpdatedAt,
-					codexUsageUpdatedAt:   tok.codexUsageUpdatedAt,
-				})
 				newAcc := accountFromCredentialSeed(id, proxyURL, seed)
 				if len(tokenCredentialMap(seed)) > 0 {
 					credCtx, credCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -2931,21 +3042,6 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				if tok.refreshToken != "" {
 					id, err = h.db.InsertAccount(insertCtx, name, tok.refreshToken, proxyURL)
 				} else {
-					seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-						sessionToken:          tok.sessionToken,
-						accessToken:           tok.accessToken,
-						idToken:               tok.idToken,
-						accountID:             importStoredAccountID(tok, conflictingChatGPTIDs),
-						email:                 tok.email,
-						planType:              tok.planType,
-						expiresAtRaw:          tok.expiresAt,
-						codex7DUsedPercent:    tok.codex7DUsedPercent,
-						codex7DResetAt:        tok.codex7DResetAt,
-						codex5HUsedPercent:    tok.codex5HUsedPercent,
-						codex5HResetAt:        tok.codex5HResetAt,
-						codex5HUsageUpdatedAt: tok.codex5HUsageUpdatedAt,
-						codexUsageUpdatedAt:   tok.codexUsageUpdatedAt,
-					})
 					id, err = h.db.InsertAccountWithCredentials(insertCtx, name, tokenCredentialMap(seed), proxyURL)
 				}
 				insertCancel()
@@ -2961,22 +3057,6 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 				atomic.AddInt64(&current, 1)
 				h.db.InsertAccountEventAsync(id, "added", "import")
 
-				seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-					refreshToken:          tok.refreshToken,
-					sessionToken:          tok.sessionToken,
-					accessToken:           tok.accessToken,
-					idToken:               tok.idToken,
-					accountID:             importStoredAccountID(tok, conflictingChatGPTIDs),
-					email:                 tok.email,
-					planType:              tok.planType,
-					expiresAtRaw:          tok.expiresAt,
-					codex7DUsedPercent:    tok.codex7DUsedPercent,
-					codex7DResetAt:        tok.codex7DResetAt,
-					codex5HUsedPercent:    tok.codex5HUsedPercent,
-					codex5HResetAt:        tok.codex5HResetAt,
-					codex5HUsageUpdatedAt: tok.codex5HUsageUpdatedAt,
-					codexUsageUpdatedAt:   tok.codexUsageUpdatedAt,
-				})
 				if len(tokenCredentialMap(seed)) > 0 {
 					credCtx, credCancel := context.WithTimeout(context.Background(), 3*time.Second)
 					if err := h.db.UpdateCredentials(credCtx, id, tokenCredentialMap(seed)); err != nil {
@@ -3185,6 +3265,10 @@ func (h *Handler) RestoreAccount(c *gin.Context) {
 			writeError(c, http.StatusNotFound, "回收站中不存在该账号")
 			return
 		}
+		if errors.Is(err, errDuplicateOAuthIdentity) {
+			writeError(c, http.StatusConflict, "恢复失败: "+err.Error())
+			return
+		}
 		writeError(c, http.StatusInternalServerError, "恢复失败: "+err.Error())
 		return
 	}
@@ -3193,14 +3277,50 @@ func (h *Handler) RestoreAccount(c *gin.Context) {
 
 // restoreAccountByID 将回收站账号恢复为 active 并重新加入运行时池。
 func (h *Handler) restoreAccountByID(ctx context.Context, id int64) error {
+	row, err := h.db.GetAccountByIDIncludingDeleted(ctx, id)
+	if err != nil {
+		return err
+	}
+	seed := tokenCredentialSeedFromAccountRow(row)
+	if duplicateID, err := h.findOAuthIdentityDuplicate(ctx, seed, id); err != nil {
+		return err
+	} else if duplicateID > 0 {
+		return fmt.Errorf("%w: 已存在相同 OAuth 账号 (id=%d)，请先删除正常账号或清理回收站账号", errDuplicateOAuthIdentity, duplicateID)
+	}
+
 	if err := h.db.RestoreAccount(ctx, id); err != nil {
 		return err
 	}
-	if err := h.store.LoadAccountByID(ctx, id); err != nil {
-		log.Printf("恢复账号 %d 后加载运行时失败: %v", id, err)
+	if h.store != nil {
+		if err := h.store.LoadAccountByID(ctx, id); err != nil {
+			log.Printf("恢复账号 %d 后加载运行时失败: %v", id, err)
+			return fmt.Errorf("恢复账号后加载运行时失败: %w", err)
+		}
 	}
 	h.db.InsertAccountEventAsync(id, "restored", "recycle_bin")
 	return nil
+}
+
+func tokenCredentialSeedFromAccountRow(row *database.AccountRow) tokenCredentialSeed {
+	if row == nil {
+		return tokenCredentialSeed{}
+	}
+	return normalizeTokenCredentialSeed(tokenCredentialSeed{
+		refreshToken:          row.GetCredential("refresh_token"),
+		sessionToken:          row.GetCredential("session_token"),
+		accessToken:           row.GetCredential("access_token"),
+		idToken:               row.GetCredential("id_token"),
+		accountID:             firstNonEmpty(row.GetCredential("account_id"), row.GetCredential("chatgpt_account_id")),
+		email:                 row.GetCredential("email"),
+		planType:              row.GetCredential("plan_type"),
+		expiresAtRaw:          row.GetCredential("expires_at"),
+		codex7DUsedPercent:    row.GetCredential("codex_7d_used_percent"),
+		codex7DResetAt:        row.GetCredential("codex_7d_reset_at"),
+		codex5HUsedPercent:    row.GetCredential("codex_5h_used_percent"),
+		codex5HResetAt:        row.GetCredential("codex_5h_reset_at"),
+		codex5HUsageUpdatedAt: row.GetCredential("codex_5h_usage_updated_at"),
+		codexUsageUpdatedAt:   row.GetCredential("codex_usage_updated_at"),
+	})
 }
 
 // PurgeAccount 从回收站彻底删除账号（物理删除）

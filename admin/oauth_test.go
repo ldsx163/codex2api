@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -102,14 +103,19 @@ func TestExchangeOAuthCodeSeedsAccessTokenFromExchangeResponse(t *testing.T) {
 
 func newOAuthExchangeTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
+	return newOAuthExchangeTestServerWithIDToken(t, "id-from-exchange")
+}
+
+func newOAuthExchangeTestServerWithIDToken(t *testing.T, idToken string) *httptest.Server {
+	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"access_token": "access-from-exchange",
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "access-from-exchange",
 			"refresh_token": "refresh-from-exchange",
-			"id_token": "id-from-exchange",
-			"expires_in": 3600
-		}`))
+			"id_token":      idToken,
+			"expires_in":    3600,
+		})
 	}))
 	t.Cleanup(server.Close)
 
@@ -121,6 +127,17 @@ func newOAuthExchangeTestServer(t *testing.T) *httptest.Server {
 		auth.ResinRequestDecorator = oldDecorator
 	})
 	return server
+}
+
+func makeOAuthTestIDToken(email, accountID, planType string) string {
+	payload, _ := json.Marshal(map[string]interface{}{
+		"email": email,
+		"https://api.openai.com/auth": map[string]interface{}{
+			"chatgpt_account_id": accountID,
+			"chatgpt_plan_type":  planType,
+		},
+	})
+	return "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(payload) + ".fake_signature"
 }
 
 func TestExchangeOAuthCodeTriggersUsageProbe(t *testing.T) {
@@ -174,6 +191,78 @@ func TestExchangeOAuthCodeTriggersUsageProbe(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("usage probe was not triggered after OAuth account add")
+	}
+}
+
+func TestExchangeOAuthCodeUpdatesDuplicateOAuthIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	db := newTestAdminDB(t)
+	store := auth.NewStore(db, cache.NewMemory(1), nil)
+	handler := &Handler{db: db, store: store}
+
+	existingID, err := db.InsertAccountWithCredentials(context.Background(), "existing", map[string]interface{}{
+		"refresh_token": "existing-refresh",
+		"email":         "duplicate@example.com",
+		"account_id":    "acc-duplicate",
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithCredentials: %v", err)
+	}
+
+	newOAuthExchangeTestServerWithIDToken(t, makeOAuthTestIDToken("Duplicate@Example.com", "acc-duplicate", "team"))
+
+	sessionID := "oauth-duplicate-session"
+	globalOAuthStore.set(sessionID, &oauthSession{
+		State:        "state-duplicate",
+		CodeVerifier: "verifier-duplicate",
+		RedirectURI:  oauthDefaultRedirectURI,
+		CreatedAt:    time.Now(),
+	})
+	t.Cleanup(func() {
+		globalOAuthStore.delete(sessionID)
+	})
+
+	body := `{"session_id":"oauth-duplicate-session","code":"code-duplicate","state":"state-duplicate"}`
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/api/admin/oauth/exchange-code", strings.NewReader(body))
+	ctx.Request.Header.Set("Content-Type", "application/json")
+
+	handler.ExchangeOAuthCode(ctx)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	var resp struct {
+		ID      int64 `json:"id"`
+		Updated bool  `json:"updated"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ID != existingID {
+		t.Fatalf("response id = %d, want %d", resp.ID, existingID)
+	}
+	if !resp.Updated {
+		t.Fatal("response updated = false, want true")
+	}
+	count, err := db.CountAll(context.Background())
+	if err != nil {
+		t.Fatalf("CountAll: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("account count = %d, want 1", count)
+	}
+	row, err := db.GetAccountByID(context.Background(), existingID)
+	if err != nil {
+		t.Fatalf("GetAccountByID: %v", err)
+	}
+	if got := row.GetCredential("refresh_token"); got != "refresh-from-exchange" {
+		t.Fatalf("refresh_token = %q, want updated exchange token", got)
+	}
+	if account := store.FindByID(existingID); account == nil {
+		t.Fatalf("runtime account %d not found after update", existingID)
 	}
 }
 
@@ -424,6 +513,71 @@ func TestUpdateOAuthAccountCodeDoesNotExposeTokenErrorBody(t *testing.T) {
 	}
 	if !strings.Contains(body, "token 兑换失败 (HTTP 400)") {
 		t.Fatalf("response = %s, want sanitized HTTP status error", body)
+	}
+}
+
+func TestUpdateOAuthAccountCodeRejectsDuplicateOAuthIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := newTestAdminDB(t)
+	store := auth.NewStore(db, cache.NewMemory(1), nil)
+	handler := &Handler{db: db, store: store}
+
+	targetID, err := db.InsertAccountWithCredentials(context.Background(), "target", map[string]interface{}{
+		"refresh_token": "target-refresh",
+		"email":         "target@example.com",
+		"account_id":    "acc-target",
+	}, "")
+	if err != nil {
+		t.Fatalf("Insert target: %v", err)
+	}
+	duplicateID, err := db.InsertAccountWithCredentials(context.Background(), "duplicate", map[string]interface{}{
+		"refresh_token": "duplicate-refresh",
+		"email":         "duplicate@example.com",
+		"account_id":    "acc-duplicate",
+	}, "")
+	if err != nil {
+		t.Fatalf("Insert duplicate: %v", err)
+	}
+	if err := store.LoadAccountByID(context.Background(), targetID); err != nil {
+		t.Fatalf("LoadAccountByID: %v", err)
+	}
+
+	newOAuthExchangeTestServerWithIDToken(t, makeOAuthTestIDToken("duplicate@example.com", "acc-duplicate", "team"))
+
+	sessionID := "oauth-edit-duplicate-session"
+	globalOAuthStore.set(sessionID, &oauthSession{
+		State:        "state-edit-duplicate",
+		CodeVerifier: "verifier-edit-duplicate",
+		RedirectURI:  oauthDefaultRedirectURI,
+		CreatedAt:    time.Now(),
+	})
+	t.Cleanup(func() { globalOAuthStore.delete(sessionID) })
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", targetID)}}
+	ctx.Request = newOAuthEditRequest(sessionID, "code-edit-duplicate", "state-edit-duplicate", "")
+
+	handler.UpdateOAuthAccountCode(ctx)
+
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d: %s", recorder.Code, http.StatusConflict, recorder.Body.String())
+	}
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if !strings.Contains(errResp.Error, fmt.Sprintf("%d", duplicateID)) {
+		t.Fatalf("error = %q, want duplicate account id %d", errResp.Error, duplicateID)
+	}
+	row, err := db.GetAccountByID(context.Background(), targetID)
+	if err != nil {
+		t.Fatalf("GetAccountByID: %v", err)
+	}
+	if got := row.GetCredential("refresh_token"); got != "target-refresh" {
+		t.Fatalf("target refresh_token = %q, want unchanged target-refresh", got)
 	}
 }
 

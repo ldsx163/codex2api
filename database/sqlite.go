@@ -506,7 +506,7 @@ func (db *DB) migrateSQLite(ctx context.Context) error {
 		return err
 	}
 
-	return nil
+	return db.runDataMigrationsWithTimeout()
 }
 
 func (db *DB) ensureSQLiteColumn(ctx context.Context, table string, name string, columnDef string) error {
