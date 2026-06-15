@@ -4917,6 +4917,7 @@ export default function Accounts() {
             <AccountUsageModal
               account={usageAccount}
               onClose={() => setUsageAccount(null)}
+              onCreditsReset={() => void reload()}
             />
           )}
 

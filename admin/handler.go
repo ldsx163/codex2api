@@ -299,6 +299,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/:id/enable", h.ToggleAccountEnabled)
 	api.POST("/accounts/:id/lock", h.ToggleAccountLock)
 	api.POST("/accounts/:id/reset-status", h.ResetAccountStatus)
+	api.POST("/accounts/:id/reset-credits", h.ResetCredits)
 	api.GET("/accounts/:id/test", h.TestConnection)
 	api.GET("/accounts/:id/usage", h.GetAccountUsage)
 	api.GET("/accounts/:id/auth-json", h.GetAccountAuthJSON)
@@ -577,6 +578,7 @@ type accountResponse struct {
 	RateLimitAttempts        int64                      `json:"rate_limit_attempts"`
 	UsagePercent7d           *float64                   `json:"usage_percent_7d"`
 	UsagePercent5h           *float64                   `json:"usage_percent_5h"`
+	RateLimitResetCredits    *int                       `json:"rate_limit_reset_credits"`
 	AutoPause5hThreshold     *float64                   `json:"auto_pause_5h_threshold"`
 	AutoPause7dThreshold     *float64                   `json:"auto_pause_7d_threshold"`
 	AutoPause5hDisabled      bool                       `json:"auto_pause_5h_disabled"`
@@ -761,6 +763,9 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			}
 			if usagePct5h, ok := acc.GetUsagePercent5h(); ok {
 				resp.UsagePercent5h = &usagePct5h
+			}
+			if credits, ok := acc.GetRateLimitResetCredits(); ok {
+				resp.RateLimitResetCredits = &credits
 			}
 			if t := acc.GetReset5hAt(); !t.IsZero() {
 				resp.Reset5hAt = t.Format(time.RFC3339)

@@ -73,6 +73,13 @@ type Account struct {
 	Reset5hAt             time.Time // 5h 窗口重置时间
 	UsageUpdatedAt        time.Time // 7d 用量快照刷新时间
 	UsageUpdatedAt5h      time.Time // 5h 用量快照刷新时间
+
+	// RateLimitResetCredits 是 OpenAI 官方账号剩余的「主动重置次数」，来自
+	// /backend-api/wham/usage 响应的 rate_limit_reset_credits.available_count。
+	// -1 表示尚未探测过（未知）；>=0 为已知次数。
+	RateLimitResetCredits      int
+	RateLimitResetCreditsValid bool
+
 	usageProbeInFlight    bool
 	recoveryProbeInFlight bool
 	AutoPause5hThreshold  float64 // 0..1, 0 = disabled
@@ -1194,6 +1201,24 @@ func (a *Account) GetUsagePercent5h() (float64, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.UsagePercent5h, a.UsagePercent5hValid
+}
+
+// SetRateLimitResetCredits 记录账号剩余的「主动重置次数」。
+func (a *Account) SetRateLimitResetCredits(count int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if count < 0 {
+		count = 0
+	}
+	a.RateLimitResetCredits = count
+	a.RateLimitResetCreditsValid = true
+}
+
+// GetRateLimitResetCredits 返回账号剩余的「主动重置次数」及其是否已探测过。
+func (a *Account) GetRateLimitResetCredits() (int, bool) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.RateLimitResetCredits, a.RateLimitResetCreditsValid
 }
 
 // ClearUsageCache 清除内存中的用量缓存，下次请求时从上游重新获取
