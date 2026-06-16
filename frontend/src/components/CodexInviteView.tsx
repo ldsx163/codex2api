@@ -107,6 +107,9 @@ export default function CodexInviteView({ accounts, onClose }: Props) {
   const [accountId, setAccountId] = useState<number | null>(firstAccount?.id ?? null)
   const [accountQuery, setAccountQuery] = useState(() => firstAccount ? accountDisplayName(firstAccount) : '')
   const [accountOpen, setAccountOpen] = useState(false)
+  // accountTyping 区分「用户正在输入搜索」与「输入框只是回显已选账号」。仅在输入时
+  // 才按文本过滤，否则展开下拉应显示全部账号（否则会被已选账号的邮箱过滤成只剩一条）。
+  const [accountTyping, setAccountTyping] = useState(false)
   const [emailsText, setEmailsText] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [proxyUrl, setProxyUrl] = useState('')
@@ -121,10 +124,12 @@ export default function CodexInviteView({ accounts, onClose }: Props) {
     [codexAccounts, accountId],
   )
   const filteredAccounts = useMemo(() => {
+    // 未在输入搜索时显示全部；正在输入才按文本过滤。
+    if (!accountTyping) return codexAccounts
     const query = accountQuery.trim().toLowerCase()
     if (!query) return codexAccounts
     return codexAccounts.filter((account) => accountSearchText(account).includes(query))
-  }, [accountQuery, codexAccounts])
+  }, [accountTyping, accountQuery, codexAccounts])
   const overLimit = parsed.valid.length > MAX_EMAILS
   const canSend =
     !sending && accountQuery.trim() !== '' && parsed.valid.length > 0 && !overLimit
@@ -216,12 +221,13 @@ export default function CodexInviteView({ accounts, onClose }: Props) {
                 <div className="relative">
                   <Input
                     value={accountQuery}
-                    onFocus={() => setAccountOpen(true)}
-                    onClick={() => setAccountOpen(true)}
+                    onFocus={() => { setAccountOpen(true); setAccountTyping(false) }}
+                    onClick={() => { setAccountOpen(true); setAccountTyping(false) }}
                     onChange={(e) => {
                       const next = e.target.value
                       setAccountQuery(next)
                       setAccountOpen(true)
+                      setAccountTyping(true)
                       setAccountId(resolveAccountInput(codexAccounts, next)?.id ?? null)
                       if (error === t('invite.accountNotFound')) setError(null)
                     }}
@@ -233,7 +239,7 @@ export default function CodexInviteView({ accounts, onClose }: Props) {
                   />
                   <button
                     type="button"
-                    onClick={() => setAccountOpen((open) => !open)}
+                    onClick={() => { setAccountOpen((open) => !open); setAccountTyping(false) }}
                     className="absolute inset-y-0 right-0 inline-flex w-9 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
                     aria-label={t('invite.accountToggle')}
                   >
@@ -260,6 +266,7 @@ export default function CodexInviteView({ accounts, onClose }: Props) {
                               setAccountId(account.id)
                               setAccountQuery(accountDisplayName(account))
                               setAccountOpen(false)
+                              setAccountTyping(false)
                               setError(null)
                             }}
                             className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-sm transition-colors ${
