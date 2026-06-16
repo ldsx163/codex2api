@@ -560,7 +560,21 @@ func (h *Handler) logUsageForRequest(c *gin.Context, input *database.UsageLogInp
 	populateAPIKeyMetaFromContext(c, input)
 	populateClientIPFromRequest(c, input)
 	populateCompactUsageMetaFromRequest(c, input)
+	markCyberPolicyUsageKind(input)
 	h.logUsage(input)
+}
+
+// markCyberPolicyUsageKind 在使用日志里把 cyber_policy 报错单独标记成 cyber_policy
+// 类型，便于「使用统计」页识别并点击查看触发详情。仅改写日志展示字段，不参与
+// 账号调度 / 冷却评分（那条路径用的是另外的 failureKind）。
+func markCyberPolicyUsageKind(input *database.UsageLogInput) {
+	if input == nil || input.UpstreamErrorKind == "cyber_policy" {
+		return
+	}
+	msg := strings.ToLower(input.ErrorMessage)
+	if strings.Contains(msg, "cyber_policy") || strings.Contains(msg, "cyber security risk") {
+		input.UpstreamErrorKind = "cyber_policy"
+	}
 }
 
 func populateClientIPFromRequest(c *gin.Context, input *database.UsageLogInput) {

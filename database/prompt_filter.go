@@ -181,6 +181,82 @@ func promptFilterLogWhere(query PromptFilterLogQuery) (string, []any) {
 	return " WHERE " + strings.Join(clauses, " AND "), args
 }
 
+// FindNearestPromptFilterLog 返回与给定时间 at 最接近的一条提示词过滤日志，用于把
+// 「使用统计」里的某次报错关联到对应的拦截记录（含完整请求内容）。按 source /
+// api_key_id 过滤，时间窗口内取最接近的一条；endpoint 仅作为同等时间下的优先项。
+func (db *DB) FindNearestPromptFilterLog(ctx context.Context, at time.Time, source, endpoint string, apiKeyID int64, windowSeconds int) (*PromptFilterLog, error) {
+	if db == nil {
+		return nil, nil
+	}
+	if windowSeconds <= 0 {
+		windowSeconds = 10
+	}
+	startArg, endArg := db.timeRangeArgs(at.Add(-time.Duration(windowSeconds)*time.Second), at.Add(time.Duration(windowSeconds)*time.Second))
+	clauses := []string{"created_at >= $1", "created_at <= $2"}
+	args := []any{startArg, endArg}
+	if s := strings.TrimSpace(source); s != "" {
+		args = append(args, s)
+		clauses = append(clauses, fmt.Sprintf("source = $%d", len(args)))
+	}
+	if apiKeyID > 0 {
+		args = append(args, apiKeyID)
+		clauses = append(clauses, fmt.Sprintf("api_key_id = $%d", len(args)))
+	}
+
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT id, created_at, COALESCE(source, ''), COALESCE(endpoint, ''), COALESCE(model, ''),
+		       COALESCE(action, ''), COALESCE(mode, ''), COALESCE(score, 0), COALESCE(threshold_value, 0),
+		       COALESCE(matched_patterns, '[]'), COALESCE(text_preview, ''), COALESCE(api_key_id, 0),
+		       COALESCE(api_key_name, ''), COALESCE(api_key_masked, ''), COALESCE(client_ip, ''), COALESCE(error_code, ''),
+		       COALESCE(review_model, ''), COALESCE(review_flagged, false), COALESCE(review_error, ''), COALESCE(full_text, '')
+		FROM prompt_filter_logs
+		WHERE `+strings.Join(clauses, " AND ")+`
+		ORDER BY id DESC
+		LIMIT 50
+	`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var best *PromptFilterLog
+	var bestDelta time.Duration
+	for rows.Next() {
+		item := &PromptFilterLog{}
+		var createdAtRaw interface{}
+		if err := rows.Scan(&item.ID, &createdAtRaw, &item.Source, &item.Endpoint, &item.Model, &item.Action, &item.Mode,
+			&item.Score, &item.Threshold, &item.MatchedPatterns, &item.TextPreview, &item.APIKeyID, &item.APIKeyName,
+			&item.APIKeyMasked, &item.ClientIP, &item.ErrorCode, &item.ReviewModel, &item.ReviewFlagged, &item.ReviewError, &item.FullText); err != nil {
+			return nil, err
+		}
+		createdAt, err := parseDBTimeValue(createdAtRaw)
+		if err != nil {
+			continue
+		}
+		item.CreatedAt = createdAt
+		delta := at.Sub(createdAt)
+		if delta < 0 {
+			delta = -delta
+		}
+		// endpoint 一致时给一点优先（减小有效距离），保证同一时刻多条时选对端点。
+		if endpoint != "" && item.Endpoint == endpoint {
+			if delta >= time.Second {
+				delta -= time.Second
+			} else {
+				delta = 0
+			}
+		}
+		if best == nil || delta < bestDelta {
+			best = item
+			bestDelta = delta
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return best, nil
+}
+
 func (db *DB) ClearPromptFilterLogs(ctx context.Context) error {
 	if db == nil {
 		return nil

@@ -30,6 +30,7 @@ import type {
   OAuthURLResponse,
   OpsErrorSummary,
   OpsOverviewResponse,
+  PromptFilterLog,
   PromptFilterLogsResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
@@ -466,6 +467,14 @@ export const api = {
   },
   clearPromptFilterLogs: () =>
     request<MessageResponse>('/prompt-filter/logs', { method: 'DELETE' }),
+  matchPromptFilterLog: (params: { at: string; endpoint?: string; apiKeyId?: number; source?: string }) => {
+    const search = new URLSearchParams()
+    search.set('at', params.at)
+    if (params.endpoint) search.set('endpoint', params.endpoint)
+    if (params.apiKeyId) search.set('api_key_id', String(params.apiKeyId))
+    if (params.source) search.set('source', params.source)
+    return request<{ found: boolean; log: PromptFilterLog | null }>(`/prompt-filter/logs/match?${search.toString()}`)
+  },
   testPromptFilter: (data: { text: string; endpoint?: string; model?: string }) =>
     request<PromptFilterTestResponse>('/prompt-filter/test', { method: 'POST', body: JSON.stringify(data) }),
   getPromptFilterRules: () =>

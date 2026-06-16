@@ -145,6 +145,42 @@ func (h *Handler) ClearPromptFilterLogs(c *gin.Context) {
 	writeMessage(c, http.StatusOK, "Prompt 检查日志已清空")
 }
 
+// MatchPromptFilterLog 按时间/端点/APIKey 找到与某次请求最接近的一条提示词过滤日志，
+// 用于「使用统计」里点击 cyber_policy 报错时查看触发的完整请求内容。
+// GET /api/prompt-filter/logs/match?at=<RFC3339>&endpoint=&api_key_id=&source=
+func (h *Handler) MatchPromptFilterLog(c *gin.Context) {
+	atRaw := strings.TrimSpace(c.Query("at"))
+	if atRaw == "" {
+		writeError(c, http.StatusBadRequest, "缺少 at 参数")
+		return
+	}
+	at, err := time.Parse(time.RFC3339, atRaw)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "at 参数格式无效（需 RFC3339）")
+		return
+	}
+	source := strings.TrimSpace(c.Query("source"))
+	if source == "" {
+		source = "upstream_cyber_policy"
+	}
+	apiKeyID := int64(0)
+	if raw := strings.TrimSpace(c.Query("api_key_id")); raw != "" {
+		if parsed, err := strconv.ParseInt(raw, 10, 64); err == nil && parsed > 0 {
+			apiKeyID = parsed
+		}
+	}
+	windowSeconds := positiveQueryInt(c, "window", 15)
+
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 5*time.Second)
+	defer cancel()
+	log, err := h.db.FindNearestPromptFilterLog(ctx, at, source, strings.TrimSpace(c.Query("endpoint")), apiKeyID, windowSeconds)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"found": log != nil, "log": log})
+}
+
 func (h *Handler) TestPromptFilter(c *gin.Context) {
 	var req promptFilterTestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
