@@ -1133,6 +1133,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/images/generations", h.ImagesGenerations)
 	v1.POST("/images/edits", h.ImagesEdits)
 	v1.POST("/messages", h.Messages)
+	v1.POST("/messages/count_tokens", h.CountTokens)
+	v1.POST("/responses/input_tokens", h.ResponsesInputTokens)
 	v1.GET("/models", h.ListModels)
 
 	// 无前缀路由（兼容 base_url 已包含 /v1 的客户端）
@@ -1143,6 +1145,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/images/generations", auth, h.ImagesGenerations)
 	r.POST("/images/edits", auth, h.ImagesEdits)
 	r.POST("/messages", auth, h.Messages)
+	r.POST("/messages/count_tokens", auth, h.CountTokens)
+	r.POST("/responses/input_tokens", auth, h.ResponsesInputTokens)
 	r.GET("/models", auth, h.ListModels)
 
 	codexDirect := r.Group("/backend-api/codex")
