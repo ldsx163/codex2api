@@ -4006,6 +4006,20 @@ export default function Accounts() {
                                       errorMessage={account.error_message}
                                     />
                                     <AccountStatusCountdown account={account} />
+                                    {(account.active_requests ?? 0) > 0 && (
+                                      <span
+                                        className="inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-blue-600 ring-1 ring-inset ring-blue-500/20 dark:bg-blue-950 dark:text-blue-400 dark:ring-blue-400/20"
+                                        title={t("accounts.activeRequestsTooltip", {
+                                          count: account.active_requests ?? 0,
+                                        })}
+                                      >
+                                        <span
+                                          className="size-1.5 animate-pulse rounded-full bg-blue-500 dark:bg-blue-400"
+                                          aria-hidden
+                                        />
+                                        {account.active_requests}
+                                      </span>
+                                    )}
                                   </div>
                                   {account.status === "error" &&
                                     account.error_message && (
