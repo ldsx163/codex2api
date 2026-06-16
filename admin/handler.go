@@ -72,6 +72,10 @@ type Handler struct {
 	resetRadarHookMu     sync.Mutex
 	resetRadarHookState  resetRadarHookState
 	resetRadarHookRunner func(context.Context, string) resetRadarHookResult
+
+	// 「主动重置次数」消耗操作的账号级互斥锁（dbID -> *sync.Mutex），
+	// 串行化同一账号的并发重置，避免重复消耗与次数计数竞态。
+	resetCreditLocks sync.Map
 }
 
 type chartCacheEntry struct {
