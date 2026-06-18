@@ -32,6 +32,7 @@ import type {
   OpsOverviewResponse,
   PromptFilterLog,
   PromptFilterLogsResponse,
+  PromptFilterRulePatternTestResponse,
   PromptFilterRulesResponse,
   PromptFilterTestResponse,
   PublicAPIKeyUsageResponse,
@@ -503,6 +504,8 @@ export const api = {
   },
   testPromptFilter: (data: { text: string; endpoint?: string; model?: string }) =>
     request<PromptFilterTestResponse>('/prompt-filter/test', { method: 'POST', body: JSON.stringify(data) }),
+  testPromptFilterRulePattern: (data: { pattern: string; text: string }) =>
+    request<PromptFilterRulePatternTestResponse>('/prompt-filter/rules/test', { method: 'POST', body: JSON.stringify(data) }),
   getPromptFilterRules: () =>
     request<PromptFilterRulesResponse>('/prompt-filter/rules'),
   getModels: () => request<ModelsResponse>('/models'),

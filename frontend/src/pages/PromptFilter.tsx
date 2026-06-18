@@ -2,7 +2,7 @@ import type { Dispatch, ReactNode, SetStateAction, TextareaHTMLAttributes } from
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { NavLink, useParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, CheckCircle2, ChevronDown, HelpCircle, Plus, RefreshCw, Save, Search, ShieldAlert, Trash2, Wand2, X } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, ChevronDown, HelpCircle, Pencil, Plus, Power, PowerOff, RefreshCw, Save, Search, ShieldAlert, Trash2, Wand2, X } from 'lucide-react'
 import { api } from '../api'
 import PageHeader from '../components/PageHeader'
 import Pagination from '../components/Pagination'
@@ -68,6 +68,13 @@ type LogFilters = {
   q: string
 }
 
+type RulePatternTestState = {
+  text: string
+  testing: boolean
+  result: 'matched' | 'not_matched' | 'invalid' | null
+  message: string
+}
+
 type CustomRuleDraft = {
   name: string
   pattern: string
@@ -110,6 +117,23 @@ const defaultCustomRuleDraft: CustomRuleDraft = {
   weight: '50',
   category: 'custom',
   strict: false,
+}
+
+const defaultRulePatternTestState: RulePatternTestState = {
+  text: '',
+  testing: false,
+  result: null,
+  message: '',
+}
+
+function customRuleDraftFromRule(rule: PromptFilterRule): CustomRuleDraft {
+  return {
+    name: rule.name || '',
+    pattern: rule.pattern || '',
+    weight: String(rule.weight || 50),
+    category: rule.category || 'custom',
+    strict: Boolean(rule.strict),
+  }
 }
 
 const normalizePromptFilterForm = (settings?: SystemSettings | null): PromptFilterForm => ({
@@ -716,7 +740,9 @@ function RulesView({
 }) {
   const { t } = useTranslation()
   const [infoOpen, setInfoOpen] = useState(false)
-  const [customDraft, setCustomDraft] = useState<CustomRuleDraft>(defaultCustomRuleDraft)
+  const [customDialogMode, setCustomDialogMode] = useState<'create' | 'edit' | null>(null)
+  const [editingCustomIndex, setEditingCustomIndex] = useState<number | null>(null)
+  const [customDialogDraft, setCustomDialogDraft] = useState<CustomRuleDraft>(defaultCustomRuleDraft)
   const [savingRule, setSavingRule] = useState('')
   const [categoryFilter, setCategoryFilter] = useState<string>('')
   const [selectedRules, setSelectedRules] = useState<Set<string>>(new Set())
@@ -808,24 +834,66 @@ function RulesView({
     await savePartialAndReload({ prompt_filter_custom_patterns: JSON.stringify(next) })
   }
 
-  const addCustomRule = async () => {
-    const name = customDraft.name.trim()
-    const pattern = customDraft.pattern.trim()
-    const weight = parseInt(customDraft.weight, 10)
+  const startCreateCustomRule = () => {
+    setCustomDialogMode('create')
+    setEditingCustomIndex(null)
+    setCustomDialogDraft(defaultCustomRuleDraft)
+  }
+
+  const startEditCustomRule = (index: number) => {
+    const rule = customPatterns[index]
+    if (!rule) return
+    setCustomDialogMode('edit')
+    setEditingCustomIndex(index)
+    setCustomDialogDraft(customRuleDraftFromRule(rule))
+  }
+
+  const closeCustomRuleDialog = () => {
+    setCustomDialogMode(null)
+    setEditingCustomIndex(null)
+    setCustomDialogDraft(defaultCustomRuleDraft)
+  }
+
+  const saveCustomRuleDialog = async () => {
+    const name = customDialogDraft.name.trim()
+    const pattern = customDialogDraft.pattern.trim()
+    const weight = parseInt(customDialogDraft.weight, 10)
     if (!name || !pattern || !weight || weight <= 0) return
-    const next = [
-      ...customPatterns,
-      {
+
+    if (customDialogMode === 'create') {
+      await saveCustomPatterns([
+        ...customPatterns,
+        {
+          name,
+          pattern,
+          weight,
+          category: customDialogDraft.category.trim() || 'custom',
+          strict: customDialogDraft.strict,
+          enabled: true,
+        },
+      ])
+      closeCustomRuleDialog()
+      return
+    }
+
+    if (customDialogMode === 'edit' && editingCustomIndex !== null) {
+      const existing = customPatterns[editingCustomIndex]
+      if (!existing) {
+        closeCustomRuleDialog()
+        return
+      }
+      const next = customPatterns.map((rule, index) => index === editingCustomIndex ? {
+        ...rule,
         name,
         pattern,
         weight,
-        category: customDraft.category.trim() || 'custom',
-        strict: customDraft.strict,
-        enabled: true,
-      },
-    ]
-    await saveCustomPatterns(next)
-    setCustomDraft(defaultCustomRuleDraft)
+        category: customDialogDraft.category.trim() || 'custom',
+        strict: customDialogDraft.strict,
+        enabled: rule.enabled !== false,
+      } : rule)
+      await saveCustomPatterns(next)
+      closeCustomRuleDialog()
+    }
   }
 
   const toggleCustom = async (index: number) => {
@@ -943,28 +1011,10 @@ function RulesView({
               <SectionTitle title={t('promptFilter.customRulesTitle')} />
               <p className="mt-1 text-sm text-muted-foreground">{t('promptFilter.customRulesDesc')}</p>
             </div>
-            <Button onClick={() => void addCustomRule()} disabled={savingRule !== '' || !customDraft.name.trim() || !customDraft.pattern.trim()}>
+            <Button onClick={startCreateCustomRule} disabled={savingRule !== ''}>
               <Plus className="size-4" />
               {t('promptFilter.addCustomRule')}
             </Button>
-          </div>
-
-          <div className="mb-4 grid gap-3 lg:grid-cols-[minmax(160px,0.8fr)_minmax(0,1.7fr)_120px_minmax(140px,0.8fr)_120px]">
-            <Field label={t('promptFilter.ruleName')}>
-              <Input value={customDraft.name} onChange={(event) => setCustomDraft((current) => ({ ...current, name: event.target.value }))} placeholder="custom_rule" />
-            </Field>
-            <Field label={t('promptFilter.rulePattern')}>
-              <Input value={customDraft.pattern} onChange={(event) => setCustomDraft((current) => ({ ...current, pattern: event.target.value }))} placeholder="(?i)dangerous phrase" />
-            </Field>
-            <Field label={t('promptFilter.ruleWeight')}>
-              <Input type="number" min={1} max={1000} value={customDraft.weight} onChange={(event) => setCustomDraft((current) => ({ ...current, weight: event.target.value }))} />
-            </Field>
-            <Field label={t('promptFilter.ruleCategory')}>
-              <Input value={customDraft.category} onChange={(event) => setCustomDraft((current) => ({ ...current, category: event.target.value }))} />
-            </Field>
-            <Field label={t('promptFilter.ruleStrict')}>
-              <Select value={customDraft.strict ? 'true' : 'false'} onValueChange={(value) => setCustomDraft((current) => ({ ...current, strict: value === 'true' }))} options={[{ label: t('common.enabled'), value: 'true' }, { label: t('common.disabled'), value: 'false' }]} />
-            </Field>
           </div>
 
           <div className="rounded-lg border border-border">
@@ -984,13 +1034,57 @@ function RulesView({
                     <TableCell colSpan={5} className="h-20 text-center text-muted-foreground">{t('promptFilter.noCustomRules')}</TableCell>
                   </TableRow>
                 ) : customPatterns.map((rule, index) => (
-                  <RuleRow key={`${rule.name}-${index}`} rule={{ ...rule, builtin: false, enabled: rule.enabled !== false }} onToggle={() => void toggleCustom(index)} onDelete={() => void deleteCustom(index)} busy={savingRule !== ''} />
+                  <RuleRow
+                    key={`${rule.name}-${index}`}
+                    rule={{ ...rule, builtin: false, enabled: rule.enabled !== false }}
+                    onToggle={() => void toggleCustom(index)}
+                    onEdit={() => startEditCustomRule(index)}
+                    onDelete={() => void deleteCustom(index)}
+                    iconActions
+                    busy={savingRule !== ''}
+                  />
                 ))}
               </TableBody>
             </Table>
           </div>
         </CardContent>
       </Card>
+
+      <Dialog open={customDialogMode !== null} onOpenChange={(open) => { if (!open) closeCustomRuleDialog() }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{customDialogMode === 'create' ? t('promptFilter.addCustomRule') : t('promptFilter.editCustomRule')}</DialogTitle>
+            <DialogDescription>{customDialogMode === 'create' ? t('promptFilter.addCustomRuleDesc') : t('promptFilter.editCustomRuleDesc')}</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-[minmax(160px,0.8fr)_minmax(0,1.2fr)]">
+            <Field label={t('promptFilter.ruleName')}>
+              <Input value={customDialogDraft.name} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, name: event.target.value }))} placeholder="custom_rule" />
+            </Field>
+            <Field label={t('promptFilter.ruleCategory')}>
+              <Input value={customDialogDraft.category} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, category: event.target.value }))} />
+            </Field>
+          </div>
+          <Field label={t('promptFilter.rulePattern')}>
+            <Textarea rows={5} value={customDialogDraft.pattern} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, pattern: event.target.value }))} placeholder="(?i)dangerous phrase" />
+          </Field>
+          <RulePatternTester pattern={customDialogDraft.pattern} />
+          <div className="grid gap-3 sm:grid-cols-[minmax(120px,0.8fr)_minmax(140px,0.8fr)]">
+            <Field label={t('promptFilter.ruleWeight')}>
+              <Input type="number" min={1} max={1000} value={customDialogDraft.weight} onChange={(event) => setCustomDialogDraft((current) => ({ ...current, weight: event.target.value }))} />
+            </Field>
+            <Field label={t('promptFilter.ruleStrict')}>
+              <Select value={customDialogDraft.strict ? 'true' : 'false'} onValueChange={(value) => setCustomDialogDraft((current) => ({ ...current, strict: value === 'true' }))} triggerClassName="h-9 rounded-md px-3 text-sm" options={[{ label: t('common.enabled'), value: 'true' }, { label: t('common.disabled'), value: 'false' }]} />
+            </Field>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={closeCustomRuleDialog} disabled={savingRule !== ''}>{t('common.cancel')}</Button>
+            <Button onClick={() => void saveCustomRuleDialog()} disabled={savingRule !== '' || !customDialogDraft.name.trim() || !customDialogDraft.pattern.trim()}>
+              <Save className="size-4" />
+              {savingRule !== '' ? t('common.saving') : t('common.save')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={infoOpen} onOpenChange={setInfoOpen}>
         <DialogContent className="max-w-2xl">
@@ -1019,7 +1113,90 @@ function RulesView({
   )
 }
 
-function RuleRow({ rule, selected, onSelect, onToggle, onDelete, busy }: { rule: PromptFilterRule; selected?: boolean; onSelect?: () => void; onToggle: () => void; onDelete?: () => void; busy?: boolean }) {
+function RulePatternTester({ pattern, className }: { pattern: string; className?: string }) {
+  const { t } = useTranslation()
+  const [state, setState] = useState<RulePatternTestState>(defaultRulePatternTestState)
+
+  useEffect(() => {
+    setState((current) => ({ ...current, result: null, message: '' }))
+  }, [pattern])
+
+  const runPatternTest = async () => {
+    const trimmedPattern = pattern.trim()
+    const text = state.text
+    if (!trimmedPattern) {
+      setState((current) => ({ ...current, result: 'invalid', message: t('promptFilter.rulePatternRequired') }))
+      return
+    }
+    if (!text.trim()) {
+      setState((current) => ({ ...current, result: 'invalid', message: t('promptFilter.ruleTestTextRequired') }))
+      return
+    }
+    setState((current) => ({ ...current, testing: true, result: null, message: '' }))
+    try {
+      const result = await api.testPromptFilterRulePattern({ pattern: trimmedPattern, text })
+      if (result.error) {
+        setState((current) => ({ ...current, testing: false, result: 'invalid', message: result.error || t('promptFilter.rulePatternInvalid') }))
+      } else if (result.matched) {
+        setState((current) => ({ ...current, testing: false, result: 'matched', message: t('promptFilter.ruleTestMatched') }))
+      } else {
+        setState((current) => ({ ...current, testing: false, result: 'not_matched', message: t('promptFilter.ruleTestNotMatched') }))
+      }
+    } catch (err) {
+      setState((current) => ({ ...current, testing: false, result: 'invalid', message: getErrorMessage(err) }))
+    }
+  }
+
+  const resultClass = state.result === 'matched'
+    ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    : state.result === 'not_matched'
+      ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+      : 'border-destructive/30 bg-destructive/10 text-destructive'
+
+  return (
+    <div className={cn('rounded-lg border border-border bg-muted/20 p-3', className)}>
+      <div className="mb-3 flex items-center justify-between gap-3 max-sm:flex-col max-sm:items-stretch">
+        <div>
+          <div className="text-sm font-semibold text-foreground">{t('promptFilter.rulePatternTesterTitle')}</div>
+          <p className="mt-1 text-xs text-muted-foreground">{t('promptFilter.rulePatternTesterDesc')}</p>
+        </div>
+        <Button size="sm" variant="outline" onClick={() => void runPatternTest()} disabled={state.testing || !pattern.trim() || !state.text.trim()}>
+          <Search className="size-3.5" />
+          {state.testing ? t('promptFilter.rulePatternTesting') : t('promptFilter.rulePatternTest')}
+        </Button>
+      </div>
+      <Textarea
+        rows={3}
+        value={state.text}
+        placeholder={t('promptFilter.ruleTestTextPlaceholder')}
+        onChange={(event) => setState((current) => ({ ...current, text: event.target.value, result: null, message: '' }))}
+      />
+      {state.result && state.message ? (
+        <div className={cn('mt-3 rounded-md border px-3 py-2 text-sm font-medium', resultClass)}>{state.message}</div>
+      ) : null}
+    </div>
+  )
+}
+
+function RuleRow({
+  rule,
+  selected,
+  onSelect,
+  onToggle,
+  onEdit,
+  onDelete,
+  iconActions = false,
+  busy,
+}: {
+  rule: PromptFilterRule
+  selected?: boolean
+  onSelect?: () => void
+  onToggle: () => void
+  onEdit?: () => void
+  onDelete?: () => void
+  iconActions?: boolean
+  busy?: boolean
+}) {
   const { t } = useTranslation()
   const enabled = rule.enabled !== false
   return (
@@ -1049,11 +1226,22 @@ function RuleRow({ rule, selected, onSelect, onToggle, onDelete, busy }: { rule:
       </TableCell>
       <TableCell>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" onClick={onToggle} disabled={busy}>
-            {enabled ? t('promptFilter.disableRule') : t('promptFilter.enableRule')}
-          </Button>
+          {iconActions ? (
+            <Button size="icon-sm" variant="ghost" onClick={onToggle} disabled={busy} aria-label={enabled ? t('promptFilter.disableRule') : t('promptFilter.enableRule')} title={enabled ? t('promptFilter.disableRule') : t('promptFilter.enableRule')}>
+              {enabled ? <PowerOff className="size-3.5" /> : <Power className="size-3.5" />}
+            </Button>
+          ) : (
+            <Button size="sm" variant="outline" onClick={onToggle} disabled={busy}>
+              {enabled ? t('promptFilter.disableRule') : t('promptFilter.enableRule')}
+            </Button>
+          )}
+          {onEdit ? (
+            <Button size="icon-sm" variant="ghost" onClick={onEdit} disabled={busy} aria-label={t('promptFilter.editCustomRule')} title={t('promptFilter.editCustomRule')}>
+              <Pencil className="size-3.5" />
+            </Button>
+          ) : null}
           {onDelete ? (
-            <Button size="sm" variant="ghost" onClick={onDelete} disabled={busy}>
+            <Button size="icon-sm" variant="ghost" onClick={onDelete} disabled={busy} aria-label={t('common.delete')} title={t('common.delete')}>
               <Trash2 className="size-3.5" />
             </Button>
           ) : null}

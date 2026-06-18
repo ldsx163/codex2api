@@ -791,6 +791,11 @@ export interface PromptFilterTestResponse {
   verdict: PromptFilterVerdict
 }
 
+export interface PromptFilterRulePatternTestResponse {
+  matched: boolean
+  error?: string
+}
+
 export interface PromptFilterRule {
   name: string
   pattern: string
