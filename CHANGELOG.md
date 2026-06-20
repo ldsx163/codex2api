@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.3.8 - 2026-06-20
+
+### Fixes
+
+- **Codex 专属 `at-...` Access Token 不再按 JWT 解码，并可通过 WHAM 自动补齐账号身份。** `at-...` 现在会识别为 `codex_at` 类型，导入/添加时不会再尝试按 JWT 解析；账号列表的 AT 徽章会显示为 `codex_at`。对于已经导入但缺少邮箱或 `account_id` 的 codex_at 账号，后续单账号用量刷新或后台 wham 用量探针会把 WHAM 返回的 `email` / `account_id` / `user_id` 写回运行时和数据库，无需重新导入。
+
 ## v2.3.7 - 2026-06-19
 
 ### Features
