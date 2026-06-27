@@ -25,7 +25,10 @@ const (
 )
 
 var (
-	codexCLIVersionPattern = regexp.MustCompile(`^codex_cli_rs/(\d+)\.(\d+)\.(\d+)`)
+	codexClientVersionPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)(?:^|[\s(;])(?:codex_cli_rs|codex_vscode|codex_app|codex_chatgpt_desktop|codex_atlas|codex_exec|codex_sdk_ts|opencode)/v?(\d+)\.(\d+)\.(\d+)(?:$|[\s;)])`),
+		regexp.MustCompile(`(?i)(?:^|[\s(;])codex\s+v?(\d+)\.(\d+)\.(\d+)(?:$|[\s;)])`),
+	}
 
 	deviceProfileCache            = make(map[string]deviceProfileCacheEntry)
 	deviceProfileCacheMu          sync.RWMutex
@@ -173,23 +176,34 @@ func mapStainlessArch() string {
 }
 
 func parseCodexCLIVersion(userAgent string) (cliVersion, bool) {
-	matches := codexCLIVersionPattern.FindStringSubmatch(strings.TrimSpace(userAgent))
-	if len(matches) != 4 {
+	return parseCodexClientVersion(userAgent)
+}
+
+func parseCodexClientVersion(userAgent string) (cliVersion, bool) {
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
 		return cliVersion{}, false
 	}
-	major, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return cliVersion{}, false
+	for _, pattern := range codexClientVersionPatterns {
+		matches := pattern.FindStringSubmatch(userAgent)
+		if len(matches) != 4 {
+			continue
+		}
+		major, err := strconv.Atoi(matches[1])
+		if err != nil {
+			return cliVersion{}, false
+		}
+		minor, err := strconv.Atoi(matches[2])
+		if err != nil {
+			return cliVersion{}, false
+		}
+		patch, err := strconv.Atoi(matches[3])
+		if err != nil {
+			return cliVersion{}, false
+		}
+		return cliVersion{major: major, minor: minor, patch: patch}, true
 	}
-	minor, err := strconv.Atoi(matches[2])
-	if err != nil {
-		return cliVersion{}, false
-	}
-	patch, err := strconv.Atoi(matches[3])
-	if err != nil {
-		return cliVersion{}, false
-	}
-	return cliVersion{major: major, minor: minor, patch: patch}, true
+	return cliVersion{}, false
 }
 
 func shouldUpgradeDeviceProfile(candidate, current deviceProfile) bool {
@@ -419,5 +433,6 @@ func ApplyLegacyDeviceHeaders(r *http.Request, ginHeaders http.Header, cfg *Devi
 
 // isCodexCodeClient 检查 User-Agent 是否是 Codex CLI 客户端
 func isCodexCodeClient(userAgent string) bool {
-	return codexCLIVersionPattern.MatchString(userAgent)
+	_, ok := parseCodexClientVersion(userAgent)
+	return ok
 }

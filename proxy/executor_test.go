@@ -367,6 +367,35 @@ func TestApplyCodexRequestHeadersAutoUpgradesOldCodexCLI(t *testing.T) {
 	}
 }
 
+func TestApplyCodexRequestHeadersAutoDoesNotUpgradeEmbeddedCodexToken(t *testing.T) {
+	prev := CurrentRuntimeSettings()
+	ApplyRuntimeSettings(RuntimeSettings{
+		ClientCompatMode:   ClientCompatModeAuto,
+		CodexMinCLIVersion: "0.118.0",
+	})
+	t.Cleanup(func() { ApplyRuntimeSettings(prev) })
+
+	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest() error = %v", err)
+	}
+	acc := &auth.Account{DBID: 42, AccountID: "acct-42"}
+	spoofedUA := "Mozilla/5.0 codex_cli_rs/0.117.0"
+	downstreamHeaders := http.Header{
+		"User-Agent": []string{spoofedUA},
+		"Originator": []string{"random-client"},
+	}
+
+	applyCodexRequestHeaders(req, acc, "token-123", "", "api-key-1", nil, downstreamHeaders)
+
+	if got := req.Header.Get("User-Agent"); got != spoofedUA {
+		t.Fatalf("User-Agent = %q, want legacy-preserved spoofed UA %q", got, spoofedUA)
+	}
+	if got := req.Header.Get("Version"); got != "0.117.0" {
+		t.Fatalf("Version = %q, want parsed legacy version 0.117.0", got)
+	}
+}
+
 func TestApplyCodexRequestHeadersFallsBackForNonOfficialClient(t *testing.T) {
 	req, err := http.NewRequest(http.MethodPost, "https://example.com/v1/responses", nil)
 	if err != nil {

@@ -39,6 +39,18 @@ var codexOfficialClientUserAgentPrefixes = []string{
 	"opencode/",
 }
 
+var codexStrictOfficialClientUserAgentPrefixes = []string{
+	"codex_cli_rs/",
+	"codex_vscode/",
+	"codex_app/",
+	"codex_chatgpt_desktop/",
+	"codex_atlas/",
+	"codex_exec/",
+	"codex_sdk_ts/",
+}
+
+const codexStrictSpacedUserAgentPrefix = "codex "
+
 // Third-party CLIs that ChatGPT-backend Codex accepts as first-party originators.
 // opencode advertises itself via Originator: "opencode" and reaching upstream with
 // that identity is required for features like reasoning_effort=xhigh to take effect.
@@ -48,9 +60,25 @@ var codexOfficialClientOriginatorPrefixes = []string{
 	"opencode",
 }
 
+var codexStrictOfficialClientOriginators = []string{
+	"codex_cli_rs",
+	"codex_vscode",
+	"codex_app",
+	"codex_chatgpt_desktop",
+	"codex_atlas",
+	"codex_exec",
+	"codex_sdk_ts",
+}
+
 func IsCodexOfficialClientByHeaders(userAgent, originator string) bool {
 	return matchCodexClientHeaderPrefixes(userAgent, codexOfficialClientUserAgentPrefixes) ||
 		matchCodexClientHeaderPrefixes(originator, codexOfficialClientOriginatorPrefixes)
+}
+
+func IsCodexStrictOfficialClientByHeaders(userAgent, originator string) bool {
+	return matchCodexClientHeaderPrefixStrict(userAgent, codexStrictOfficialClientUserAgentPrefixes) ||
+		matchCodexSpacedUserAgentStrict(userAgent) ||
+		matchCodexClientHeaderExact(originator, codexStrictOfficialClientOriginators)
 }
 
 func LatestCodexCLIVersionForHeaders() string {
@@ -72,6 +100,46 @@ func matchCodexClientHeaderPrefixes(value string, prefixes []string) bool {
 			continue
 		}
 		if strings.HasPrefix(value, prefix) || strings.Contains(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchCodexClientHeaderPrefixStrict(value string, prefixes []string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, prefix := range prefixes {
+		prefix = strings.ToLower(strings.TrimSpace(prefix))
+		if prefix == "" {
+			continue
+		}
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchCodexSpacedUserAgentStrict(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if !strings.HasPrefix(value, codexStrictSpacedUserAgentPrefix) {
+		return false
+	}
+	remainder := strings.TrimSpace(strings.TrimPrefix(value, codexStrictSpacedUserAgentPrefix))
+	return remainder != ""
+}
+
+func matchCodexClientHeaderExact(value string, allowed []string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, candidate := range allowed {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate != "" && value == candidate {
 			return true
 		}
 	}

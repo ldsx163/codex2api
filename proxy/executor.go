@@ -562,7 +562,7 @@ func codexVersionFromProfile(profile deviceProfile, fallback string) string {
 }
 
 func codexVersionFromUserAgent(userAgent, fallback string) string {
-	if version, ok := parseCodexCLIVersion(userAgent); ok {
+	if version, ok := parseCodexClientVersion(userAgent); ok {
 		return fmt.Sprintf("%d.%d.%d", version.major, version.minor, version.patch)
 	}
 	return strings.TrimSpace(fallback)
@@ -573,7 +573,7 @@ func codexVersionFromString(raw string) (cliVersion, bool) {
 	if raw == "" {
 		return cliVersion{}, false
 	}
-	return parseCodexCLIVersion("codex_cli_rs/" + raw)
+	return parseCodexClientVersion("codex_cli_rs/" + raw)
 }
 
 func generatedCodexClientHeaders(account *auth.Account) (string, string) {
@@ -598,7 +598,7 @@ func shouldGenerateCodexClientHeaders(settings RuntimeSettings, userAgent, origi
 	case ClientCompatModeForce:
 		return true
 	case ClientCompatModeAuto:
-		version, ok := parseCodexCLIVersion(userAgent)
+		version, ok := parseCodexClientVersion(userAgent)
 		if !ok {
 			return false
 		}
@@ -606,7 +606,7 @@ func shouldGenerateCodexClientHeaders(settings RuntimeSettings, userAgent, origi
 		if !ok {
 			minVersion, _ = codexVersionFromString(defaultCodexMinCLIVersion)
 		}
-		return IsCodexOfficialClientByHeaders(userAgent, originator) && version.Compare(minVersion) < 0
+		return IsCodexStrictOfficialClientByHeaders(userAgent, originator) && version.Compare(minVersion) < 0
 	default:
 		return false
 	}
