@@ -94,6 +94,10 @@ type Account struct {
 	effectiveAutoPause7d        float64
 	autoPause5hGuardBandPercent float64 // percentage points, 0 = disabled
 	autoPause5hGuardConcurrency int     // 0 = disabled; otherwise guard-band concurrency cap
+	DispatchCountLimit          int64   // 0 = disabled; per-reset-window dispatch cap
+	dispatchCountMu             sync.Mutex
+	dispatchWindowUsed          int64
+	dispatchWindowResetAt       time.Time
 
 	// 调度健康信号
 	HealthTier               AccountHealthTier
@@ -2285,7 +2289,9 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	fastEnabled := fastSchedulerEnabledFromEnv() || settings.FastSchedulerEnabled
 	s.fastSchedulerEnabled.Store(fastEnabled)
 	if fastEnabled {
-		s.fastScheduler.Store(NewFastScheduler(int64(settings.MaxConcurrency), s.GetSchedulerMode()))
+		scheduler := NewFastScheduler(int64(settings.MaxConcurrency), s.GetSchedulerMode())
+		s.configureFastScheduler(scheduler)
+		s.fastScheduler.Store(scheduler)
 		log.Printf("快速调度器已启用（请求热路径将优先走本地内存调度器）")
 	}
 
@@ -2326,12 +2332,22 @@ func (s *Store) getFastScheduler() *FastScheduler {
 	return s.fastScheduler.Load()
 }
 
+func (s *Store) configureFastScheduler(scheduler *FastScheduler) {
+	if s == nil || scheduler == nil {
+		return
+	}
+	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
+	scheduler.SetAcquireFunc(func(acc *Account, concurrencyLimit int64) bool {
+		return s.tryAcquireAccount(acc, concurrencyLimit, false)
+	})
+}
+
 func (s *Store) rebuildFastScheduler() {
 	if s == nil || !s.fastSchedulerEnabled.Load() {
 		return
 	}
 	scheduler := s.BuildFastScheduler()
-	scheduler.SetGroupCheck(s.APIKeyAllowsAccount)
+	s.configureFastScheduler(scheduler)
 	s.fastScheduler.Store(scheduler)
 }
 
@@ -3002,6 +3018,9 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	account.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
 	account.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
+	if limit, ok := row.GetCredentialInt64("dispatch_count_limit"); ok {
+		account.SetDispatchCountLimit(limit)
+	}
 	account.recomputeEffectiveAutoPause(s)
 	for _, cooldown := range modelCooldowns[row.ID] {
 		account.RestoreModelCooldown(cooldown.Model, cooldown.Reason, cooldown.ResetAt, cooldown.UpdatedAt)
@@ -3203,6 +3222,33 @@ func (s *Store) NextExcluding(apiKeyID int64, exclude map[int64]bool) *Account {
 	return s.NextExcludingWithFilter(apiKeyID, exclude, nil)
 }
 
+func (s *Store) tryAcquireAccount(acc *Account, limit int64, updateSchedulerOnLimit bool) bool {
+	if acc == nil || limit <= 0 {
+		return false
+	}
+	for {
+		current := atomic.LoadInt64(&acc.ActiveRequests)
+		if current >= limit {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(&acc.ActiveRequests, current, current+1) {
+			now := time.Now()
+			reservation := acc.reserveDispatchCount(now)
+			if !reservation.Allowed {
+				atomic.AddInt64(&acc.ActiveRequests, -1)
+				s.markDispatchCountLimitCooldown(acc, reservation.ResetAt, updateSchedulerOnLimit)
+				return false
+			}
+			atomic.AddInt64(&acc.TotalRequests, 1)
+			atomic.StoreInt64(&acc.LastUsedAt, now.UnixNano())
+			if reservation.HitLimit {
+				s.markDispatchCountLimitCooldown(acc, reservation.ResetAt, updateSchedulerOnLimit)
+			}
+			return true
+		}
+	}
+}
+
 // NextExcludingWithFilter 获取下一个可用账号，并应用请求级账号过滤器。
 func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, filter AccountFilter) *Account {
 	if s.GetLazyMode() {
@@ -3272,7 +3318,7 @@ func (s *Store) NextExcludingWithFilter(apiKeyID int64, exclude map[int64]bool, 
 		if s.accountHasCachedCooldown(best) {
 			continue
 		}
-		if tryAcquireAccount(best, bestLimit) {
+		if s.tryAcquireAccount(best, bestLimit, true) {
 			return best
 		}
 	}
@@ -3379,7 +3425,7 @@ func (s *Store) acquireLazyCandidate(acc *Account, maxConcurrency int64) bool {
 	if limit <= 0 {
 		return false
 	}
-	return tryAcquireAccount(acc, limit)
+	return s.tryAcquireAccount(acc, limit, true)
 }
 
 func (s *Store) nextExcludingWithFilterLazy(apiKeyID int64, exclude map[int64]bool, filter AccountFilter) *Account {
@@ -3696,7 +3742,7 @@ func (s *Store) takeByIDExcluding(id int64, apiKeyID int64, exclude map[int64]bo
 	if !available || limit <= 0 {
 		return nil
 	}
-	if !tryAcquireAccount(target, limit) {
+	if !s.tryAcquireAccount(target, limit, true) {
 		return nil
 	}
 	return target
@@ -4259,6 +4305,20 @@ func (s *Store) ApplyAccountQuotaAutoPauseConfig(dbID int64, threshold5h, thresh
 	return true
 }
 
+func (s *Store) ApplyAccountDispatchCountLimit(dbID int64, limit *int64) bool {
+	acc := s.FindByID(dbID)
+	if acc == nil {
+		return false
+	}
+	if limit == nil {
+		acc.SetDispatchCountLimit(0)
+	} else {
+		acc.SetDispatchCountLimit(*limit)
+	}
+	s.fastSchedulerUpdate(acc)
+	return true
+}
+
 func (s *Store) ApplyAccountTags(dbID int64, tags []string) bool {
 	acc := s.FindByID(dbID)
 	if acc == nil {
@@ -4494,6 +4554,62 @@ func (s *Store) MarkCooldown(acc *Account, duration time.Duration, reason string
 // MarkCooldownWithError 标记账号进入冷却，并同时记录本次上游错误详情。
 func (s *Store) MarkCooldownWithError(acc *Account, duration time.Duration, reason string, errorMsg string) {
 	s.markCooldown(acc, duration, reason, errorMsg)
+}
+
+func (s *Store) markDispatchCountLimitCooldown(acc *Account, resetAt time.Time, updateScheduler bool) {
+	if s == nil || acc == nil {
+		return
+	}
+	now := time.Now()
+	if resetAt.IsZero() || !resetAt.After(now) {
+		resetAt = now.Add(dispatchCountFallbackWindow)
+	}
+	s.markCooldownUntil(acc, resetAt, "rate_limited", updateScheduler)
+}
+
+func (s *Store) markCooldownUntil(acc *Account, until time.Time, reason string, updateScheduler bool) {
+	if acc == nil {
+		return
+	}
+	now := time.Now()
+	if until.IsZero() || !until.After(now) {
+		until = now.Add(dispatchCountFallbackWindow)
+	}
+	reason = normalizeCooldownReason(reason)
+
+	acc.mu.Lock()
+	acc.Status = StatusCooldown
+	acc.CooldownUtil = until
+	acc.CooldownReason = reason
+	switch reason {
+	case "unauthorized":
+		acc.LastUnauthorizedAt = now
+		acc.LastFailureAt = now
+		acc.HealthTier = HealthTierBanned
+	case "rate_limited", "usage_limited", "usage_limit":
+		acc.LastRateLimitedAt = now
+		if acc.healthTierLocked() == HealthTierHealthy {
+			acc.HealthTier = HealthTierWarm
+		} else if acc.HealthTier != HealthTierBanned {
+			acc.HealthTier = HealthTierRisky
+		}
+	}
+	acc.recomputeSchedulerLocked(atomic.LoadInt64(&s.maxConcurrency))
+	acc.mu.Unlock()
+
+	if updateScheduler {
+		s.fastSchedulerUpdate(acc)
+	}
+	s.setCachedAccountCooldown(acc.DBID, reason, until)
+
+	if s.db == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := s.db.SetCooldown(ctx, acc.DBID, reason, until); err != nil {
+		log.Printf("[账号 %d] 持久化冷却状态失败: %v", acc.DBID, err)
+	}
 }
 
 func (s *Store) markCooldown(acc *Account, duration time.Duration, reason string, errorMsg string) {

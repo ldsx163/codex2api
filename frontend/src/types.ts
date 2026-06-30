@@ -86,6 +86,10 @@ export interface AccountRow {
   auto_pause_7d_threshold?: number | null
   auto_pause_5h_disabled?: boolean
   auto_pause_7d_disabled?: boolean
+  dispatch_count_limit?: number | null
+  dispatch_count_used?: number
+  dispatch_count_reset_at?: ISODateString
+  dispatch_count_limited?: boolean
   usage_5h_detail?: AccountUsageWindow
   usage_7d_detail?: AccountUsageWindow
   reset_5h_at?: ISODateString
@@ -222,6 +226,7 @@ export interface UpdateAccountSchedulerRequest {
   auto_pause_7d_threshold?: number | null
   auto_pause_5h_disabled?: boolean
   auto_pause_7d_disabled?: boolean
+  dispatch_count_limit?: number | null
 }
 
 export interface BatchUpdateAccountsRequest extends UpdateAccountSchedulerRequest {

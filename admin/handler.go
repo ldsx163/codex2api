@@ -598,6 +598,10 @@ type accountResponse struct {
 	AutoPause7dThreshold     *float64                   `json:"auto_pause_7d_threshold"`
 	AutoPause5hDisabled      bool                       `json:"auto_pause_5h_disabled"`
 	AutoPause7dDisabled      bool                       `json:"auto_pause_7d_disabled"`
+	DispatchCountLimit       *int64                     `json:"dispatch_count_limit"`
+	DispatchCountUsed        int64                      `json:"dispatch_count_used,omitempty"`
+	DispatchCountResetAt     string                     `json:"dispatch_count_reset_at,omitempty"`
+	DispatchCountLimited     bool                       `json:"dispatch_count_limited,omitempty"`
 	Usage5hDetail            *accountUsageWindow        `json:"usage_5h_detail,omitempty"`
 	Usage7dDetail            *accountUsageWindow        `json:"usage_7d_detail,omitempty"`
 	Reset5hAt                string                     `json:"reset_5h_at,omitempty"`
@@ -752,6 +756,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 		resp.AutoPause7dThreshold = accountQuotaAutoPauseThreshold(row, "auto_pause_7d_threshold")
 		resp.AutoPause5hDisabled = row.GetCredentialBool("auto_pause_5h_disabled")
 		resp.AutoPause7dDisabled = row.GetCredentialBool("auto_pause_7d_disabled")
+		resp.DispatchCountLimit = accountDispatchCountLimit(row)
 		if acc, ok := accountMap[row.ID]; ok {
 			acc.Mu().RLock()
 			resp.GroupIDs = append([]int64(nil), acc.GroupIDs...)
@@ -793,6 +798,15 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			}
 			if credits, ok := acc.GetRateLimitResetCredits(); ok {
 				resp.RateLimitResetCredits = &credits
+			}
+			if snapshot := acc.GetDispatchCountSnapshot(); snapshot.Limit > 0 {
+				limit := snapshot.Limit
+				resp.DispatchCountLimit = &limit
+				resp.DispatchCountUsed = snapshot.Used
+				resp.DispatchCountLimited = snapshot.Limited
+				if !snapshot.ResetAt.IsZero() {
+					resp.DispatchCountResetAt = snapshot.ResetAt.Format(time.RFC3339)
+				}
 			}
 			if t := acc.GetReset5hAt(); !t.IsZero() {
 				resp.Reset5hAt = t.Format(time.RFC3339)
@@ -912,6 +926,7 @@ type updateAccountSchedulerReq struct {
 	AutoPause7dThreshold    json.RawMessage `json:"auto_pause_7d_threshold"`
 	AutoPause5hDisabled     json.RawMessage `json:"auto_pause_5h_disabled"`
 	AutoPause7dDisabled     json.RawMessage `json:"auto_pause_7d_disabled"`
+	DispatchCountLimit      json.RawMessage `json:"dispatch_count_limit"`
 	ProxyURL                json.RawMessage `json:"proxy_url"`
 }
 
@@ -926,6 +941,7 @@ type accountSchedulerUpdate struct {
 	AutoPause7dThreshold    optionalFloat64
 	AutoPause5hDisabled     database.OptionalBool
 	AutoPause7dDisabled     database.OptionalBool
+	DispatchCountLimit      database.OptionalNullInt64
 	ProxyURL                database.OptionalString
 	CredentialUpdates       map[string]interface{}
 }
@@ -971,6 +987,10 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if err != nil {
 		return accountSchedulerUpdate{}, err
 	}
+	dispatchCountLimit, err := parseOptionalIntegerField(req.DispatchCountLimit, "dispatch_count_limit", 0, 1000000)
+	if err != nil {
+		return accountSchedulerUpdate{}, err
+	}
 
 	proxyURL, err := parseOptionalStringField(req.ProxyURL, "proxy_url", security.ValidateProxyURL)
 	if err != nil {
@@ -989,6 +1009,13 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 	if autoPause7dDisabled.Set {
 		credentialUpdates["auto_pause_7d_disabled"] = autoPause7dDisabled.Value
 	}
+	if dispatchCountLimit.Set {
+		if dispatchCountLimit.Value.Valid {
+			credentialUpdates["dispatch_count_limit"] = dispatchCountLimit.Value.Int64
+		} else {
+			credentialUpdates["dispatch_count_limit"] = int64(0)
+		}
+	}
 	if len(credentialUpdates) == 0 {
 		credentialUpdates = nil
 	}
@@ -1004,6 +1031,7 @@ func parseAccountSchedulerUpdate(req updateAccountSchedulerReq) (accountSchedule
 		AutoPause7dThreshold:    autoPause7dThreshold,
 		AutoPause5hDisabled:     autoPause5hDisabled,
 		AutoPause7dDisabled:     autoPause7dDisabled,
+		DispatchCountLimit:      dispatchCountLimit,
 		ProxyURL:                proxyURL,
 		CredentialUpdates:       credentialUpdates,
 	}, nil
@@ -1020,6 +1048,7 @@ func (u accountSchedulerUpdate) hasChanges() bool {
 		u.AutoPause7dThreshold.Set ||
 		u.AutoPause5hDisabled.Set ||
 		u.AutoPause7dDisabled.Set ||
+		u.DispatchCountLimit.Set ||
 		u.ProxyURL.Set
 }
 
@@ -1164,6 +1193,9 @@ func (h *Handler) applyAccountSchedulerRuntimeUpdate(id int64, update accountSch
 			optionalBoolPtr(update.AutoPause7dDisabled),
 		)
 	}
+	if update.DispatchCountLimit.Set {
+		h.store.ApplyAccountDispatchCountLimit(id, nullableInt64Pointer(update.DispatchCountLimit.Value))
+	}
 	if update.Tags.Set {
 		h.store.ApplyAccountTags(id, update.Tags.Values)
 	}
@@ -1192,6 +1224,17 @@ func accountQuotaAutoPauseThreshold(row *database.AccountRow, key string) *float
 	}
 	if value > 1 {
 		value = 1
+	}
+	return &value
+}
+
+func accountDispatchCountLimit(row *database.AccountRow) *int64 {
+	value, ok := row.GetCredentialInt64("dispatch_count_limit")
+	if !ok || value <= 0 {
+		return nil
+	}
+	if value > 1000000 {
+		value = 1000000
 	}
 	return &value
 }

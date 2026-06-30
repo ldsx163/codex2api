@@ -377,6 +377,27 @@ function percentThresholdInputToRatio(value: string): number | null {
   return parsed / 100;
 }
 
+function formatDispatchCountLimitInput(value?: number | null): string {
+  if (typeof value !== "number" || value <= 0) return "";
+  return String(Math.trunc(value));
+}
+
+function isDispatchCountLimitInputInvalid(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  if (!/^\d+$/.test(trimmed)) return true;
+  const parsed = Number.parseInt(trimmed, 10);
+  return parsed < 0 || parsed > 1000000;
+}
+
+function dispatchCountLimitInputToValue(value: string): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed;
+}
+
 function getMediaQueryMatch(query: string): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
     return false;
@@ -572,6 +593,8 @@ export default function Accounts() {
     useState(false);
   const [editAutoPause7dDisabled, setEditAutoPause7dDisabled] =
     useState(false);
+  const [editDispatchCountLimitInput, setEditDispatchCountLimitInput] =
+    useState("");
   const [allowedAPIKeySelection, setAllowedAPIKeySelection] = useState<
     number[]
   >([]);
@@ -2718,6 +2741,9 @@ export default function Accounts() {
     );
     setEditAutoPause5hDisabled(account.auto_pause_5h_disabled ?? false);
     setEditAutoPause7dDisabled(account.auto_pause_7d_disabled ?? false);
+    setEditDispatchCountLimitInput(
+      formatDispatchCountLimitInput(account.dispatch_count_limit),
+    );
     setAllowedAPIKeySelection(
       filterExistingAPIKeyIDs(account.allowed_api_key_ids ?? [], apiKeys),
     );
@@ -2753,6 +2779,7 @@ export default function Accounts() {
     setEditAutoPause7dThresholdInput("");
     setEditAutoPause5hDisabled(false);
     setEditAutoPause7dDisabled(false);
+    setEditDispatchCountLimitInput("");
     setAllowedAPIKeySelection([]);
     setEditProxyUrl("");
     setEditTags([]);
@@ -2793,6 +2820,17 @@ export default function Accounts() {
   const editAutoPause7dThresholdInvalid = isPercentThresholdInputInvalid(
     editAutoPause7dThresholdInput,
   );
+  const editDispatchCountLimitInvalid = isDispatchCountLimitInputInvalid(
+    editDispatchCountLimitInput,
+  );
+  const editDispatchCountLimitPreview =
+    editDispatchCountLimitInvalid
+      ? null
+      : dispatchCountLimitInputToValue(editDispatchCountLimitInput);
+  const editDispatchCountResetTime =
+    editDispatchCountLimitPreview && editingAccount
+      ? formatResetAt(editingAccount.dispatch_count_reset_at)
+      : null;
   const batchAutoPause5hThresholdInvalid = isPercentThresholdInputInvalid(
     batchAutoPause5hThresholdInput,
   );
@@ -2850,7 +2888,8 @@ export default function Accounts() {
       scoreInputInvalid ||
       concurrencyInputInvalid ||
       editAutoPause5hThresholdInvalid ||
-      editAutoPause7dThresholdInvalid
+      editAutoPause7dThresholdInvalid ||
+      editDispatchCountLimitInvalid
     ) {
       showToast(t("accounts.schedulerInvalidInput"), "error");
       return;
@@ -2875,6 +2914,9 @@ export default function Accounts() {
         ),
         auto_pause_5h_disabled: editAutoPause5hDisabled,
         auto_pause_7d_disabled: editAutoPause7dDisabled,
+        dispatch_count_limit: dispatchCountLimitInputToValue(
+          editDispatchCountLimitInput,
+        ),
       };
       await api.updateAccountScheduler(editingAccount.id, payload);
       showToast(t("accounts.schedulerSaveSuccess"));
@@ -5218,7 +5260,8 @@ export default function Accounts() {
                         (scoreInputInvalid ||
                           concurrencyInputInvalid ||
                           editAutoPause5hThresholdInvalid ||
-                          editAutoPause7dThresholdInvalid)) ||
+                          editAutoPause7dThresholdInvalid ||
+                          editDispatchCountLimitInvalid)) ||
                       openAIAccountInputInvalid
                     }
                   >
@@ -5598,10 +5641,9 @@ export default function Accounts() {
                                         editingAccount,
                                       ),
                                   })}
-                              </div>
                             </div>
-                          )}
-                        </div>
+                          </div>
+                        )}
                       </div>
 
                       <div className="rounded-xl border border-border p-4">
@@ -5628,6 +5670,53 @@ export default function Accounts() {
                               className={`pointer-events-none block size-4 rounded-full bg-white shadow transition-transform ${skipWarmTier ? "translate-x-4" : "translate-x-0"}`}
                             />
                           </button>
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-border p-4 md:col-span-2">
+                        <div className="text-sm font-semibold text-foreground">
+                          {t("accounts.dispatchCountLimitTitle")}
+                        </div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          {t("accounts.dispatchCountLimitHint")}
+                        </div>
+                        <div className="mt-3">
+                          <label className="mb-1.5 block text-xs font-semibold text-muted-foreground">
+                            {t("accounts.dispatchCountLimitLabel")}
+                          </label>
+                          <Input
+                            inputMode="numeric"
+                            value={editDispatchCountLimitInput}
+                            placeholder={t(
+                              "accounts.dispatchCountLimitPlaceholder",
+                            )}
+                            onChange={(event: ChangeEvent<HTMLInputElement>) =>
+                              setEditDispatchCountLimitInput(event.target.value)
+                            }
+                          />
+                          <div
+                            className={`mt-1.5 text-xs ${editDispatchCountLimitInvalid ? "text-red-500" : "text-muted-foreground"}`}
+                          >
+                            {editDispatchCountLimitInvalid
+                              ? t("accounts.dispatchCountLimitRange")
+                              : editDispatchCountLimitPreview
+                                ? t("accounts.dispatchCountLimitStatus", {
+                                    used:
+                                      editingAccount.dispatch_count_used ?? 0,
+                                    limit: editDispatchCountLimitPreview,
+                                  })
+                                : t("accounts.dispatchCountLimitDisabled")}
+                          </div>
+                          {editDispatchCountResetTime ? (
+                            <div
+                              className="mt-1 text-xs text-muted-foreground"
+                              title={editDispatchCountResetTime.title}
+                            >
+                              {t("accounts.dispatchCountLimitResetAt", {
+                                time: editDispatchCountResetTime.label,
+                              })}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
 
@@ -5683,32 +5772,33 @@ export default function Accounts() {
                         <div className="mt-1 text-xs text-muted-foreground">
                           {t("accounts.allowedAPIKeysHint")}
                         </div>
-                          <div className="mt-3">
-                            <APIKeyMultiSelect
-                              options={apiKeys}
-                              value={allowedAPIKeySelection}
-                              disabled={apiKeys.length === 0}
-                              onChange={setAllowedAPIKeySelection}
-                              allLabel={t("accounts.allowedAPIKeysAll")}
-                              selectedLabel={t(
-                                "accounts.allowedAPIKeysSelected",
-                                {
-                                  count: allowedAPIKeySelection.length,
-                                },
-                              )}
-                              placeholder={t("accounts.allowedAPIKeysPlaceholder")}
-                              emptyLabel={t("accounts.allowedAPIKeysNoOptions")}
-                              emptyHint={t("accounts.allowedAPIKeysNoOptionsHint")}
-                            />
-                          </div>
-                    </div>
+                        <div className="mt-3">
+                          <APIKeyMultiSelect
+                            options={apiKeys}
+                            value={allowedAPIKeySelection}
+                            disabled={apiKeys.length === 0}
+                            onChange={setAllowedAPIKeySelection}
+                            allLabel={t("accounts.allowedAPIKeysAll")}
+                            selectedLabel={t(
+                              "accounts.allowedAPIKeysSelected",
+                              {
+                                count: allowedAPIKeySelection.length,
+                              },
+                            )}
+                            placeholder={t("accounts.allowedAPIKeysPlaceholder")}
+                            emptyLabel={t("accounts.allowedAPIKeysNoOptions")}
+                            emptyHint={t("accounts.allowedAPIKeysNoOptionsHint")}
+                          />
+                        </div>
+                      </div>
 
-                    <div className="rounded-xl border border-border p-4">
-                      {renderProxyInput({
-                        value: editProxyUrl,
-                        testKey: "edit-account-proxy",
-                        onChange: setEditProxyUrl,
-                      })}
+                      <div className="rounded-xl border border-border p-4">
+                        {renderProxyInput({
+                          value: editProxyUrl,
+                          testKey: "edit-account-proxy",
+                          onChange: setEditProxyUrl,
+                        })}
+                      </div>
                     </div>
 
                     <div className="grid gap-4 md:grid-cols-2">
