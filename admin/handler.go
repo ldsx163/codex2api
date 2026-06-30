@@ -3829,7 +3829,24 @@ func (h *Handler) refreshAccountByID(ctx context.Context, id int64) error {
 	if refreshFn == nil {
 		refreshFn = h.refreshSingleAccount
 	}
-	return refreshFn(refreshCtx, id)
+	if err := refreshFn(refreshCtx, id); err != nil {
+		return err
+	}
+
+	// 刷新成功后顺带做一次零成本 wham 用量探针，从服务端权威数据同步订阅到期时间与用量。
+	// 续费后 access/id token 里的 chatgpt_subscription_active_until 不一定立即更新（会滞后），
+	// 仅靠 token 刷新会让"有效期"长期停留在旧值；wham/usage 返回的是服务端当前订阅到期时间。
+	// （issue #300）
+	if probe := h.usageProbeFunc(); probe != nil && h.store != nil {
+		if acc := h.store.FindByID(id); acc != nil {
+			probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
+			if err := probe(probeCtx, acc); err != nil {
+				log.Printf("[账号 %d] 刷新后用量/订阅到期探针失败（忽略）: %v", id, err)
+			}
+			probeCancel()
+		}
+	}
+	return nil
 }
 
 func (h *Handler) streamBatchRefreshAccounts(c *gin.Context, ids []int64) {
