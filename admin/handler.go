@@ -69,10 +69,6 @@ type Handler struct {
 	reqCountCache     map[int64]*database.AccountRequestCount
 	reqCountExpiresAt time.Time
 
-	resetRadarHookMu     sync.Mutex
-	resetRadarHookState  resetRadarHookState
-	resetRadarHookRunner func(context.Context, string) resetRadarHookResult
-
 	// 「主动重置次数」消耗操作的账号级互斥锁（dbID -> *sync.Mutex），
 	// 串行化同一账号的并发重置，避免重复消耗与次数计数竞态。
 	resetCreditLocks sync.Map
@@ -252,7 +248,6 @@ func NewHandler(store *auth.Store, db *database.DB, tc cache.TokenCache, rl *pro
 	handler.refreshAccount = handler.refreshSingleAccount
 	handler.probeUsage = handler.ProbeUsageSnapshot
 	handler.syncAccountPlanOnReset = handler.syncSingleAccountPlanOnReset
-	handler.resetRadarHookRunner = handler.runResetRadarSignalHook
 	if db != nil {
 		if err := db.MarkInterruptedImageJobs(context.Background()); err != nil {
 			log.Printf("标记中断生图任务失败: %v", err)
@@ -347,7 +342,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/ops/errors", h.GetOpsErrorLogs)
 	api.GET("/ops/errors/export", h.ExportOpsErrorLogs)
 	api.GET("/ops/errors/summary", h.GetOpsErrorSummary)
-	api.GET("/reset-radar", h.GetResetRadar)
 	api.GET("/settings", h.GetSettings)
 	api.PUT("/settings", h.UpdateSettings)
 	api.POST("/settings/background-upload", h.UploadBackgroundAsset)
