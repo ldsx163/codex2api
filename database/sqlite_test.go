@@ -287,6 +287,7 @@ func TestFindActiveAccountByOAuthIdentityMatchesUserID(t *testing.T) {
 
 // v2 迁移：user_id 也是身份别名——个人账号（credentials 只有 user_id）和被旧版
 // wham 回填污染（user_id 写进了 account_id）的账号必须合并为一组。
+// 勾选"允许重复添加"强制导入的副本（allow_duplicate 标记）不参与合并。
 func TestSQLiteDataMigrationV2DedupesByUserID(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
 	ctx := context.Background()
@@ -319,6 +320,16 @@ func TestSQLiteDataMigrationV2DedupesByUserID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Insert fresh 返回错误: %v", err)
 	}
+	// 强制重复副本：allow_duplicate 标记，身份与上面相同，但必须保留
+	forcedID, err := db.InsertAccountWithCredentials(ctx, "forced-dup", map[string]interface{}{
+		"access_token":    "at-forced-copy",
+		"email":           "solo@example.com",
+		"user_id":         "user-dup999",
+		"allow_duplicate": "true",
+	}, "")
+	if err != nil {
+		t.Fatalf("Insert forced 返回错误: %v", err)
+	}
 
 	if err := db.runDataMigrationsWithTimeout(); err != nil {
 		t.Fatalf("runDataMigrations 返回错误: %v", err)
@@ -330,6 +341,21 @@ func TestSQLiteDataMigrationV2DedupesByUserID(t *testing.T) {
 	}
 	if remaining != 1 {
 		t.Fatalf("v2 迁移后存活账号 = %d, want 1（user_id 重复应被合并）", remaining)
+	}
+
+	var forcedAlive int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM accounts WHERE id = $1 AND status <> 'deleted' AND COALESCE(error_message, '') <> 'deleted'`, forcedID).Scan(&forcedAlive); err != nil {
+		t.Fatalf("查询强制副本返回错误: %v", err)
+	}
+	if forcedAlive != 1 {
+		t.Fatal("allow_duplicate 副本被迁移误删，应保留")
+	}
+
+	// 强制副本也不作为身份判重锚点：按身份查找应命中主账号而非副本
+	if got, err := db.FindActiveAccountByOAuthIdentity(ctx, "solo@example.com", "user-dup999"); err != nil {
+		t.Fatalf("FindActiveAccountByOAuthIdentity 返回错误: %v", err)
+	} else if got == forcedID {
+		t.Fatal("身份判重不应命中 allow_duplicate 副本")
 	}
 }
 

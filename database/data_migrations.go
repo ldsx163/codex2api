@@ -212,6 +212,11 @@ func (db *DB) listOAuthIdentityDedupeAccounts(ctx context.Context, tx *sql.Tx) (
 }
 
 func oauthIdentityDedupeAliases(credentials map[string]interface{}) []string {
+	// 用户勾选"允许重复添加"强制导入的副本带 allow_duplicate 标记，
+	// 是故意保留的重复（如同一账号配不同代理），不得参与合并。
+	if strings.EqualFold(strings.TrimSpace(credentialStringFromMap(credentials, "allow_duplicate")), "true") {
+		return nil
+	}
 	email := strings.ToLower(strings.TrimSpace(credentialStringFromMap(credentials, "email")))
 	if email == "" {
 		return nil

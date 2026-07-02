@@ -1677,7 +1677,7 @@ func (h *Handler) AddAccount(c *gin.Context) {
 
 	var seeds []tokenCredentialSeed
 	for i := 0; i < total; i++ {
-		seed := tokenCredentialSeed{}
+		seed := tokenCredentialSeed{allowDuplicate: req.AllowDuplicate}
 		if len(refreshTokens) > 0 {
 			seed.refreshToken = refreshTokens[i]
 		}
@@ -1940,7 +1940,8 @@ func (h *Handler) AddATAccount(c *gin.Context) {
 		}
 
 		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{
-			accessToken: at,
+			accessToken:    at,
+			allowDuplicate: req.AllowDuplicate,
 		})
 		if !req.AllowDuplicate && seed.email != "" && (seed.accountID != "" || seed.userID != "") {
 			id, updated, err := h.upsertOAuthIdentityAccount(ctx, name, req.ProxyURL, seed, "manual_at")
@@ -2054,7 +2055,7 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 			name = fmt.Sprintf("%s-%d", req.Name, i+1)
 		}
 
-		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at})
+		seed := normalizeTokenCredentialSeed(tokenCredentialSeed{accessToken: at, allowDuplicate: req.AllowDuplicate})
 		if !req.AllowDuplicate && seed.email != "" && (seed.accountID != "" || seed.userID != "") {
 			id, updated, err := h.upsertOAuthIdentityAccount(ctx, name, req.ProxyURL, seed, "manual_at")
 			if err != nil {
@@ -3241,6 +3242,7 @@ func (h *Handler) importAccountsCommon(c *gin.Context, tokens []importToken, pro
 			name := tok.name
 
 			seed := importTokenSeed(tok, conflictingChatGPTIDs)
+			seed.allowDuplicate = allowDuplicate
 			importSource := "import"
 			if tok.accessToken != "" && tok.refreshToken == "" {
 				importSource = "import_at"

@@ -5267,6 +5267,11 @@ func (db *DB) FindActiveAccountByOAuthIdentity(ctx context.Context, email, accou
 		if _, ok := excluded[id]; ok {
 			continue
 		}
+		// 勾选"允许重复添加"强制导入的副本不作为判重锚点：后续正常导入
+		// 应命中/更新主账号，而不是把凭证写进用户故意保留的副本。
+		if strings.EqualFold(strings.TrimSpace(credentialString(raw, "allow_duplicate")), "true") {
+			continue
+		}
 		if strings.ToLower(strings.TrimSpace(credentialString(raw, "email"))) != email {
 			continue
 		}
