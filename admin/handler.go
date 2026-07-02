@@ -185,7 +185,79 @@ func (h *Handler) refreshImportedAccountAndProbe(accountID int64, source string)
 		return
 	}
 	log.Printf("导入账号 %d 刷新成功", accountID)
+	// 裸 RT 导入时身份要等首次刷新后才可知：此刻回查身份重复，
+	// 若与已有账号同一身份则合并凭证并移除本账号（保留旧账号的用量统计）。
+	if h.mergeRefreshedDuplicateIntoExisting(accountID, source) {
+		return
+	}
 	h.probeImportedAccountUsage(context.Background(), accountID, source)
+}
+
+// mergeRefreshedDuplicateIntoExisting 检查刚刷新完的新导入账号是否与已有账号
+// 同一 OAuth 身份。若重复，把新凭证（refresh_token 优先级最高，可自动续期）
+// 合并进已有账号——codex_* 用量快照键不在更新集里，旧账号的用量统计与按
+// 账号 ID 关联的请求历史全部保留——然后软删新插入的账号。返回 true 表示已合并。
+func (h *Handler) mergeRefreshedDuplicateIntoExisting(newID int64, source string) bool {
+	if h == nil || h.db == nil || h.store == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	newRow, err := h.db.GetAccountByID(ctx, newID)
+	if err != nil || newRow == nil {
+		return false
+	}
+	// 勾选"允许重复添加"导入的副本是用户故意保留的，不合并。
+	if strings.EqualFold(strings.TrimSpace(newRow.GetCredential("allow_duplicate")), "true") {
+		return false
+	}
+	email := strings.TrimSpace(newRow.GetCredential("email"))
+	identity := strings.TrimSpace(newRow.GetCredential("account_id"))
+	if identity == "" {
+		identity = strings.TrimSpace(newRow.GetCredential("chatgpt_account_id"))
+	}
+	if identity == "" {
+		identity = strings.TrimSpace(newRow.GetCredential("user_id"))
+	}
+	if email == "" || identity == "" {
+		return false
+	}
+	oldID, err := h.db.FindActiveAccountByOAuthIdentity(ctx, email, identity, newID)
+	if err != nil || oldID <= 0 {
+		return false
+	}
+
+	updates := make(map[string]interface{})
+	for _, key := range []string{"refresh_token", "session_token", "access_token", "access_token_type", "id_token", "expires_at", "email", "account_id", "user_id", "plan_type", "subscription_expires_at"} {
+		if v := strings.TrimSpace(newRow.GetCredential(key)); v != "" {
+			updates[key] = v
+		}
+	}
+	if len(updates) == 0 {
+		return false
+	}
+	proxyURL := strings.TrimSpace(newRow.ProxyURL)
+	if proxyURL == "" {
+		if oldRow, err := h.db.GetAccountByID(ctx, oldID); err == nil && oldRow != nil {
+			proxyURL = strings.TrimSpace(oldRow.ProxyURL)
+		}
+	}
+	if err := h.db.UpdateOAuthAccountCredentials(ctx, oldID, updates, proxyURL); err != nil {
+		log.Printf("合并导入账号 %d 凭证到已有账号 %d 失败: %v", newID, oldID, err)
+		return false
+	}
+	if err := h.reloadTokenAccount(ctx, oldID, source); err != nil {
+		log.Printf("合并后重载账号 %d 失败: %v", oldID, err)
+	}
+	if err := h.db.SoftDeleteAccount(ctx, newID); err != nil {
+		log.Printf("软删重复导入账号 %d 失败: %v", newID, err)
+	}
+	h.store.RemoveAccount(newID)
+	h.db.InsertAccountEventAsync(newID, "deleted", fmt.Sprintf("merged_into_%d", oldID))
+	h.db.InsertAccountEventAsync(oldID, "updated", "rt_upgrade_merge")
+	log.Printf("导入账号 %d 与已有账号 %d 同一 OAuth 身份，已合并凭证（RT 升级）并保留用量统计 (source=%s)", newID, oldID, source)
+	return true
 }
 
 func (h *Handler) deleteRuntimeCache(ctx context.Context, namespace, key string) {
