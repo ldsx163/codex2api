@@ -325,7 +325,13 @@ func (h *Handler) Messages(c *gin.Context) {
 				continue
 			}
 
-			// 最终错误：用 Anthropic 格式返回
+			// 最终错误：用 Anthropic 格式返回。
+			// 上游账号 401（OAuth token 失效）是账号侧问题，不是下游客户端凭证无效；
+			// 原样以 401 透传会让客户端误判自己的 key 失效（issue #323），改写为 503。
+			if resp.StatusCode == http.StatusUnauthorized && !isMissingScopeUnauthorized(errBody) {
+				sendAnthropicError(c, http.StatusServiceUnavailable, "overloaded_error", "账号池暂无可用账号（上游账号鉴权失效），请稍后重试")
+				return
+			}
 			errType := mapHTTPStatusToAnthropicError(resp.StatusCode)
 			msg := gjson.GetBytes(errBody, "error.message").String()
 			if msg == "" {

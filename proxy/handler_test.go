@@ -1871,6 +1871,55 @@ func TestSendFinalUpstreamError_UsageLimitRewrites500(t *testing.T) {
 	}
 }
 
+// TestSendFinalUpstreamError_UpstreamUnauthorizedRemappedTo503 验证上游账号 401
+// (OAuth token 失效)重试耗尽后改写为 503 池级错误，不原样以 401 透传给客户端，
+// 避免客户端误判自己的 API key 失效 (issue #323)。
+func TestSendFinalUpstreamError_UpstreamUnauthorizedRemappedTo503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	handler := &Handler{}
+	body := []byte(`{"error":{"message":"Encountered invalidated oauth token for user, failing request","code":"token_revoked"},"status":401}`)
+
+	handler.sendFinalUpstreamError(ctx, http.StatusUnauthorized, body)
+
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d (upstream 401 must not surface as client 401)", recorder.Code, http.StatusServiceUnavailable)
+	}
+	var payload struct {
+		Error struct {
+			Code string `json:"code"`
+			Type string `json:"type"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Error.Code != "account_pool_unauthorized" {
+		t.Fatalf("code = %q, want account_pool_unauthorized", payload.Error.Code)
+	}
+}
+
+// TestSendFinalUpstreamError_MissingScope401Passthrough 验证 missing_scope 类 401
+// 仍按原状态码透传(它是可保留在池中的良性 401，不应被当作账号鉴权失效改写)。
+func TestSendFinalUpstreamError_MissingScope401Passthrough(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+
+	handler := &Handler{}
+	body := []byte(`{"error":{"message":"missing scope api.responses.write","code":"missing_scope"}}`)
+
+	handler.sendFinalUpstreamError(ctx, http.StatusUnauthorized, body)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d (missing_scope 401 passes through)", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestCompute429CooldownPlusUsesWindowHeaders(t *testing.T) {
 	handler := &Handler{}
 	account := &auth.Account{PlanType: "plus"}
@@ -2564,5 +2613,47 @@ func TestResponsesWebSocketStripsInjectedImageTool(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for upstream request")
+	}
+}
+
+// TestResolveAPIKeyDistinguishesDBFailureFrom404 验证 resolveAPIKey 区分三态：
+// 命中、查无此 key、DB 故障。DB 故障(如连接耗尽 "too many clients")必须返回
+// 非 nil error，让中间件回 503 而非误报 401 invalid_api_key (issue #323)。
+func TestResolveAPIKeyDistinguishesDBFailureFrom404(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+
+	if _, err := db.InsertAPIKey(ctx, "tester", "sk-valid-123"); err != nil {
+		t.Fatalf("InsertAPIKey: %v", err)
+	}
+
+	h := &Handler{db: db, configKeys: map[string]bool{}}
+
+	// 1. 命中
+	row, ok, resolveErr := h.resolveAPIKey("sk-valid-123")
+	if !ok || resolveErr != nil || row == nil {
+		t.Fatalf("valid key: row=%v ok=%v err=%v, want hit", row, ok, resolveErr)
+	}
+
+	// 2. 查无此 key → (nil,false,nil)，中间件据此回 401
+	row, ok, resolveErr = h.resolveAPIKey("sk-does-not-exist")
+	if ok || resolveErr != nil || row != nil {
+		t.Fatalf("missing key: row=%v ok=%v err=%v, want (nil,false,nil)", row, ok, resolveErr)
+	}
+
+	// 3. DB 故障(关闭连接后查询出错) → err 非 nil，中间件据此回 503
+	if err := db.Close(); err != nil {
+		t.Fatalf("db.Close: %v", err)
+	}
+	row, ok, resolveErr = h.resolveAPIKey("sk-valid-123")
+	if ok || row != nil {
+		t.Fatalf("db failure: row=%v ok=%v, want not-ok", row, ok)
+	}
+	if resolveErr == nil {
+		t.Fatal("db failure must return a non-nil error so middleware answers 503, not 401")
 	}
 }

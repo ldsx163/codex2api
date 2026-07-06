@@ -433,37 +433,46 @@ func NewHandlerWithDeviceProfile(store *auth.Store, db *database.DB, deviceCfg *
 	return NewHandler(store, db, nil, deviceCfg)
 }
 
-func (h *Handler) resolveAPIKey(key string) (*database.APIKeyRow, bool) {
+// resolveAPIKey 解析下游 API Key。返回值区分三种结果：
+//   - (row, true, nil)：命中有效 key
+//   - (nil, false, nil)：确认查无此 key（应答 401）
+//   - (nil, false, err)：DB/基础设施暂时性故障（应答 503，而非误报 key 无效）
+//
+// 关键：绝不能把"数据库连接耗尽/超时"这类暂时性故障当成"客户端 key 无效"
+// 返回 401，否则压测或 DB 抖动时客户端会误以为自己的凭证失效（issue #323）。
+func (h *Handler) resolveAPIKey(key string) (*database.APIKeyRow, bool, error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return nil, false
+		return nil, false, nil
 	}
 	if h.configKeys[key] {
 		return &database.APIKeyRow{
 			ID:   0,
 			Name: "config",
 			Key:  key,
-		}, true
+		}, true, nil
 	}
 	if row, ok := h.resolveAPIKeyFromRuntimeCache(key); ok {
 		h.syncAPIKeyAllowedGroups(row)
-		return row, true
+		return row, true, nil
 	}
 	if h.db == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	row, err := h.db.GetAPIKeyByValue(ctx, key)
 	if err != nil {
-		if !errors.Is(err, sql.ErrNoRows) {
-			log.Printf("查询 API Key 失败: %v", err)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
 		}
-		return nil, false
+		// DB 故障（连接耗尽/超时/网络）：上报错误让调用方回 503，不当成 key 无效。
+		log.Printf("查询 API Key 失败: %v", err)
+		return nil, false, err
 	}
 	h.setAPIKeyRuntimeCache(row)
 	h.syncAPIKeyAllowedGroups(row)
-	return row, true
+	return row, true, nil
 }
 
 func (h *Handler) resolveAPIKeyFromRuntimeCache(key string) (*database.APIKeyRow, bool) {
@@ -527,9 +536,9 @@ func (h *Handler) syncAPIKeyAllowedGroups(row *database.APIKeyRow) {
 	h.store.SetAPIKeyAllowedPlans(row.ID, row.Limits.PlanAllow)
 }
 
-// isValidKey 检查 key 是否有效（配置文件 + DB）
+// isValidKey 检查 key 是否有效（配置文件 + DB）。DB 故障时保守返回 false。
 func (h *Handler) isValidKey(key string) bool {
-	_, ok := h.resolveAPIKey(key)
+	_, ok, _ := h.resolveAPIKey(key)
 	return ok
 }
 
@@ -1288,7 +1297,14 @@ func (h *Handler) authMiddleware() gin.HandlerFunc {
 		authHeader = security.SanitizeInput(authHeader)
 
 		key := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		apiKeyRow, ok := h.resolveAPIKey(key)
+		apiKeyRow, ok, resolveErr := h.resolveAPIKey(key)
+		if resolveErr != nil {
+			// DB/基础设施暂时性故障：返回 503，不当成客户端 key 无效（issue #323）。
+			// 不记 AUTH_FAILED 审计日志，避免污染凭证攻击告警。
+			api.SendError(c, api.ErrServiceUnavailable)
+			c.Abort()
+			return
+		}
 		if !ok {
 			// 记录安全审计日志（脱敏）
 			maskedKey := security.MaskAPIKey(key)
@@ -4127,6 +4143,20 @@ func (h *Handler) sendFinalUpstreamError(c *gin.Context, statusCode int, body []
 			errInfo["resets_in_seconds"] = details.resetsInSeconds
 		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": errInfo})
+		return
+	}
+
+	// 上游账号 401（OAuth token 失效/撤销）是账号侧问题，不是下游客户端 key 无效。
+	// 若原样以 401 透传，客户端会误判自己的凭证失效（issue #323）。改写为 503 池级
+	// 错误，用独立 code/type 与客户端鉴权失败（invalid_api_key）明确区分。
+	if statusCode == http.StatusUnauthorized && !isMissingScopeUnauthorized(body) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": gin.H{
+				"message": "账号池暂无可用账号（上游账号鉴权失效），请稍后重试",
+				"type":    "server_error",
+				"code":    "account_pool_unauthorized",
+			},
+		})
 		return
 	}
 
