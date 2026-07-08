@@ -26,6 +26,7 @@
     "restarting": "Restarting…",
     "updateApplied": "Update applied",
     "updateFailed": "Update failed",
+    "restartTimeout": "The service may still be restarting. Please refresh the page manually in a moment to see the new version.",
     "logout": "Log out",
     "refresh": "Refresh",
     "save": "Save",

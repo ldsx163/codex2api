@@ -109,6 +109,9 @@ export default function Layout({ children }: PropsWithChildren) {
         if (attempts >= 60) {
           stopRestartPolling()
           setRestartingAfterUpdate(false)
+          // 90s 内未观察到版本切换:服务可能仍在重启(容器/守护进程拉起较慢),
+          // 提示用户稍后手动刷新,而不是静默恢复按钮让人以为“没反应”。
+          showToast(t('common.restartTimeout'), 'error')
           return
         }
         scheduleNext(1500)
@@ -116,7 +119,7 @@ export default function Layout({ children }: PropsWithChildren) {
     }
 
     scheduleNext(2500)
-  }, [stopRestartPolling])
+  }, [stopRestartPolling, showToast, t])
 
   const handleApplyUpdate = async () => {
     if (!canApplyUpdate || updatingVersion || restartingAfterUpdate) return

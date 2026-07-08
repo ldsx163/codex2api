@@ -309,8 +309,14 @@ func TestSystemUpdaterPerformUpdateReplacesBinaryAndKeepsBackup(t *testing.T) {
 	}
 	select {
 	case path := <-restarted:
-		if path != currentPath {
-			t.Fatalf("restart path = %q, want %q", path, currentPath)
+		// 生产代码在替换前会 EvalSymlinks 解析真实路径(如 macOS 下 /var → /private/var),
+		// 断言期望值同样解析,避免在软链接临时目录的平台上误报。
+		wantPath := currentPath
+		if resolved, err := filepath.EvalSymlinks(currentPath); err == nil {
+			wantPath = resolved
+		}
+		if path != wantPath {
+			t.Fatalf("restart path = %q, want %q", path, wantPath)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("restart was not scheduled")

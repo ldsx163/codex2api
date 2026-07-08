@@ -26,6 +26,7 @@
     "restarting": "重启中…",
     "updateApplied": "更新已应用",
     "updateFailed": "更新失败",
+    "restartTimeout": "服务可能仍在重启，请稍后手动刷新页面查看新版本",
     "logout": "退出登录",
     "refresh": "刷新",
     "save": "保存",
