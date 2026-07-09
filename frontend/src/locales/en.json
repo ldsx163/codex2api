@@ -1251,6 +1251,8 @@
     "tableCached": "Cached",
     "tableFirstToken": "First Token",
     "tableFirstTokenHint": "First Token = time from request start until the upstream emits the first real content token (text / reasoning / tool arguments). Reasoning models think before that point, so a first-token time close to the total duration is normal and does not mean the proxy got slower.",
+    "tableTokensPerSec": "tok/s",
+    "tableTokensPerSecHint": "Output throughput = output tokens ÷ generation seconds. When first-token time is present it is excluded (closer to pure decode speed); otherwise full duration is used. Failed or empty-output requests show -.",
     "tableDuration": "Duration",
     "tableTime": "Time",
     "searchEmail": "Search account email or IP…",

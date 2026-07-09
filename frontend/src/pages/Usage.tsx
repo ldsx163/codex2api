@@ -1140,7 +1140,7 @@ function EmptyPanel({ accent, icon, text }: { accent: PanelAccentKey; icon: Reac
   )
 }
 
-type UsageTableColumn = 'status' | 'model' | 'account' | 'apiKey' | 'clientIp' | 'endpoint' | 'type' | 'token' | 'cost' | 'cached' | 'firstToken' | 'duration' | 'time'
+type UsageTableColumn = 'status' | 'model' | 'account' | 'apiKey' | 'clientIp' | 'endpoint' | 'type' | 'token' | 'cost' | 'cached' | 'firstToken' | 'tokensPerSec' | 'duration' | 'time'
 
 const USAGE_COLUMN_DEFINITIONS: Array<{ key: UsageTableColumn; labelKey: string }> = [
   { key: 'status', labelKey: 'usage.tableStatus' },
@@ -1154,6 +1154,7 @@ const USAGE_COLUMN_DEFINITIONS: Array<{ key: UsageTableColumn; labelKey: string 
   { key: 'cost', labelKey: 'usage.tableCost' },
   { key: 'cached', labelKey: 'usage.tableCached' },
   { key: 'firstToken', labelKey: 'usage.tableFirstToken' },
+  { key: 'tokensPerSec', labelKey: 'usage.tableTokensPerSec' },
   { key: 'duration', labelKey: 'usage.tableDuration' },
   { key: 'time', labelKey: 'usage.tableTime' },
 ]
@@ -1171,8 +1172,58 @@ const DEFAULT_USAGE_VISIBLE_COLUMNS: Record<UsageTableColumn, boolean> = {
   cost: true,
   cached: true,
   firstToken: true,
+  tokensPerSec: true,
   duration: true,
   time: true,
+}
+
+/**
+ * Output tokens/sec from existing log fields — no backend change needed.
+ * Prefers generation window (duration − first_token) so TTFT does not drag the rate down.
+ */
+function computeOutputTokensPerSec(log: UsageLog): number | null {
+  if (log.status_code >= 400) return null
+  const outputTokens = Math.max(0, log.output_tokens || log.completion_tokens || 0)
+  if (outputTokens <= 0 || log.duration_ms <= 0) return null
+
+  let generationMs = log.duration_ms
+  if (log.first_token_ms > 0 && log.first_token_ms < log.duration_ms) {
+    generationMs = log.duration_ms - log.first_token_ms
+  }
+  // Guard tiny windows (e.g. first token almost equals end) that explode the rate.
+  if (generationMs < 20) generationMs = log.duration_ms
+  if (generationMs <= 0) return null
+
+  return outputTokens / (generationMs / 1000)
+}
+
+function formatTokensPerSec(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '-'
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
+  if (value >= 100) return value.toFixed(0)
+  if (value >= 10) return value.toFixed(1)
+  return value.toFixed(2)
+}
+
+function tokensPerSecClassName(value: number): string {
+  // Rough bands for visual scan; absolute numbers vary by model.
+  if (value >= 80) return 'text-emerald-600 dark:text-emerald-400'
+  if (value >= 30) return 'text-foreground'
+  if (value >= 10) return 'text-amber-600 dark:text-amber-400'
+  return 'text-red-500 dark:text-red-400'
+}
+
+function TokensPerSecCell({ log }: { log: UsageLog }) {
+  const value = computeOutputTokensPerSec(log)
+  if (value == null) {
+    return <span className={`${usageTableMonoClass} text-muted-foreground`}>-</span>
+  }
+  return (
+    <span className={`${usageTableMonoClass} ${tokensPerSecClassName(value)}`} title={`${value.toFixed(2)} tok/s`}>
+      {formatTokensPerSec(value)}
+      <span className="ml-0.5 text-[11px] font-medium opacity-70">tok/s</span>
+    </span>
+  )
 }
 
 function getInitialUsageVisibleColumns(): Record<UsageTableColumn, boolean> {
@@ -1912,6 +1963,17 @@ export default function Usage() {
                             {firstTokenLabel || '-'}
                           </div>
                         </div>
+                        <div className="rounded-lg border border-border/70 bg-card/60 px-2.5 py-2">
+                          <div
+                            className="text-[11px] font-semibold text-muted-foreground"
+                            title={t('usage.tableTokensPerSecHint')}
+                          >
+                            {t('usage.tableTokensPerSec')}
+                          </div>
+                          <div className="mt-1">
+                            <TokensPerSecCell log={log} />
+                          </div>
+                        </div>
                       </div>
                     </div>
                   )
@@ -1936,6 +1998,16 @@ export default function Usage() {
                       {visibleColumns.cost && <TableHead className={usageTableHeadClass}>{t('usage.tableCost')}</TableHead>}
                       {visibleColumns.cached && <TableHead className={usageTableHeadClass}>{t('usage.tableCached')}</TableHead>}
                       {visibleColumns.firstToken && <TableHead className={usageTableHeadClass}><span title={t('usage.tableFirstTokenHint')} className="cursor-help underline decoration-dotted underline-offset-2">{t('usage.tableFirstToken')}</span></TableHead>}
+                      {visibleColumns.tokensPerSec && (
+                        <TableHead className={usageTableHeadClass}>
+                          <span
+                            title={t('usage.tableTokensPerSecHint')}
+                            className="cursor-help underline decoration-dotted underline-offset-2"
+                          >
+                            {t('usage.tableTokensPerSec')}
+                          </span>
+                        </TableHead>
+                      )}
                       {visibleColumns.duration && <TableHead className={usageTableHeadClass}>{t('usage.tableDuration')}</TableHead>}
                       {visibleColumns.time && <TableHead className={usageTableHeadClass}>{t('usage.tableTime')}</TableHead>}
                     </TableRow>
@@ -2074,6 +2146,11 @@ export default function Usage() {
                             </span>
                           ) : <span className={`${usageTableMonoClass} text-muted-foreground`}>-</span>}
                         </TableCell>}
+                        {visibleColumns.tokensPerSec && (
+                          <TableCell>
+                            <TokensPerSecCell log={log} />
+                          </TableCell>
+                        )}
                         {visibleColumns.duration && <TableCell>
                           <span className={`${usageTableMonoClass} ${log.duration_ms > 30000 ? 'text-red-500' : log.duration_ms > 10000 ? 'text-amber-500' : 'text-muted-foreground'}`}>
                             {log.duration_ms > 1000 ? `${(log.duration_ms / 1000).toFixed(1)}s` : `${log.duration_ms}ms`}
