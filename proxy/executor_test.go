@@ -889,18 +889,16 @@ func TestExecuteOpenAIResponsesRequestHonorsCodexClientMetadataMode(t *testing.T
 	}
 }
 
-func TestExecuteOpenAIResponsesRequestPreservesClientInstallationID(t *testing.T) {
+func TestExecuteOpenAIResponsesRequestPreservesClientInstallationIDWithoutLearningRequirement(t *testing.T) {
 	var mu sync.Mutex
-	requestCount := 0
+	installationIDs := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requestCount++
-		mu.Unlock()
 		body, _ := io.ReadAll(r.Body)
 		_ = r.Body.Close()
-		if got := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String(); got != "client-installation-id" {
-			t.Errorf("installation ID = %q, want preserved client value", got)
-		}
+		installationID := gjson.GetBytes(body, "client_metadata.x-codex-installation-id").String()
+		mu.Lock()
+		installationIDs = append(installationIDs, installationID)
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"resp_test"}`))
 	}))
@@ -912,17 +910,28 @@ func TestExecuteOpenAIResponsesRequestPreservesClientInstallationID(t *testing.T
 		BaseURL:      server.URL,
 		APIKey:       "relay-token",
 	}
+	capabilityKey := openAIResponsesCodexMetadataCapabilityKey(account, server.URL)
+	openAIResponsesCodexMetadataRequired.Delete(capabilityKey)
+	t.Cleanup(func() { openAIResponsesCodexMetadataRequired.Delete(capabilityKey) })
+
 	body := []byte(`{"model":"gpt-5.5","client_metadata":{"x-codex-installation-id":"client-installation-id"}}`)
 	resp, err := ExecuteOpenAIResponsesRequest(context.Background(), account, body, "", nil)
 	if err != nil {
-		t.Fatalf("ExecuteOpenAIResponsesRequest() error = %v", err)
+		t.Fatalf("client metadata request error = %v", err)
 	}
 	resp.Body.Close()
+
+	resp, err = ExecuteOpenAIResponsesRequest(context.Background(), account, []byte(`{"model":"gpt-5.5"}`), "", nil)
+	if err != nil {
+		t.Fatalf("plain request error = %v", err)
+	}
+	resp.Body.Close()
+
 	mu.Lock()
-	gotCount := requestCount
+	gotIDs := append([]string(nil), installationIDs...)
 	mu.Unlock()
-	if gotCount != 1 {
-		t.Fatalf("upstream requests = %d, want 1", gotCount)
+	if len(gotIDs) != 2 || gotIDs[0] != "client-installation-id" || gotIDs[1] != "" {
+		t.Fatalf("installation IDs = %#v, want preserved client ID then no injected ID", gotIDs)
 	}
 }
 

@@ -427,12 +427,13 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	endpoint := auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 	capabilityKey := openAIResponsesCodexMetadataCapabilityKey(account, baseURL)
 	clientMetadataMode := account.OpenAIResponsesCodexClientMetadataMode()
+	proxyInjectedMetadata := false
 	if clientMetadataMode == auth.CodexClientMetadataModeAlways {
-		requestBody, _ = ensureCodexClientInstallationMetadata(requestBody, account, headers)
+		requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
 	} else if clientMetadataMode == auth.CodexClientMetadataModeAuto {
 		_, required := openAIResponsesCodexMetadataRequired.Load(capabilityKey)
 		if required {
-			requestBody, _ = ensureCodexClientInstallationMetadata(requestBody, account, headers)
+			requestBody, proxyInjectedMetadata = ensureCodexClientInstallationMetadata(requestBody, account, headers)
 		}
 	}
 
@@ -460,11 +461,14 @@ func ExecuteOpenAIResponsesRequest(ctx context.Context, account *auth.Account, r
 	if clientMetadataMode == auth.CodexClientMetadataModeOff || clientMetadataMode == auth.CodexClientMetadataModeAlways {
 		return resp, nil
 	}
-	hasInstallationMetadata := codexClientInstallationID(requestBody) != ""
-	if hasInstallationMetadata {
+	if proxyInjectedMetadata {
 		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
 			openAIResponsesCodexMetadataRequired.Store(capabilityKey, struct{}{})
 		}
+		return resp, nil
+	}
+	if codexClientInstallationID(requestBody) != "" {
+		// A pass-through client ID does not prove that this relay requires generated metadata.
 		return resp, nil
 	}
 	if !isCodexAccessRestrictedResponse(resp) {
