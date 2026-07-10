@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.4.9 - 2026-07-10
+
+### Fixes
+
+- **Reserved `collaboration.*` tools pass through untouched — gpt-5.6 multi-agent no longer 400s (#342).** GPT-5.6 multi-agent v2 declares reserved tools such as `collaboration.spawn_agent`, whose schema the upstream requires to match its official configuration verbatim. The proxy applied its generic function-tool schema sanitization (`stripUnsupportedSchemaKeys` drops `pattern`/`minItems`/`format`/…, plus `required` normalization and array-items defaults) to *every* function tool, so it mutated the reserved tool's schema too — the upstream then rejected the request with "Invalid Value: 'tools'. Function 'collaboration.spawn_agent' is reserved for use by this model and must match the configured schema", and the stream disconnected before completion; switching to gpt-5.5 (whose client doesn't send collaboration tools) worked around it. A reserved-namespace check (`collaboration.` prefix, matching both flat Responses and nested Chat-Completions tool shapes) now passes such tools through verbatim in both `normalizeResponsesFunctionTools` and the schema-sanitize loop — no flattening, no default descriptions, no schema stripping. It is not model-gated, since the reserved namespace should be preserved for any model. Verified end-to-end that the reserved tool name and structure reach the upstream unchanged; note that acceptance still requires the account to be entitled for multi-agent (unentitled tiers are rejected upstream on the generic tool-name check, independent of this fix).
+
 ## v2.4.8 - 2026-07-10
 
 ### Features
