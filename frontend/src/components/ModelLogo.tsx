@@ -2,10 +2,111 @@ import { useEffect, useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 
 /**
- * LobeHub Icons CDN — https://lobehub.com/icons
- * Uses static SVG (no @lobehub/icons / antd peer deps).
+ * LobeHub Icons via npm: `@lobehub/icons-static-svg`
+ * https://lobehub.com/icons
+ *
+ * Icons are resolved from node_modules and hashed into the Vite build.
+ * Prefer this over `@lobehub/icons` to avoid antd / @lobehub/ui peer deps.
+ *
+ * Only the icon files we actually reference are listed below so the bundle
+ * stays small (import.meta.glob requires static path literals).
  */
-const LOBE_ICON_BASE = 'https://unpkg.com/@lobehub/icons-static-svg@latest/icons'
+
+// ?url → hashed asset URL strings. Keep this list in sync with MODEL_MAPPINGS + Docs.
+const ICON_URLS = import.meta.glob(
+  [
+    '../../node_modules/@lobehub/icons-static-svg/icons/openai.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/codex.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/codex-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/sora.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/sora-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/dalle.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/dalle-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/claude.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/claude-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/claudecode.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/claudecode-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/cherrystudio.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/cherrystudio-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/anthropic.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/gemini.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/gemini-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/gemma.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/gemma-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/deepmind.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/deepmind-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/deepseek.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/deepseek-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/qwen.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/qwen-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/moonshot.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/mistral.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/mistral-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/meta.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/meta-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/llava.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/llava-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/grok.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/perplexity.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/perplexity-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/yi.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/yi-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/minimax.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/minimax-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/zai.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/chatglm.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/chatglm-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/doubao.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/doubao-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/hunyuan.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/hunyuan-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/wenxin.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/wenxin-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/baichuan.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/baichuan-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/spark.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/spark-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/stepfun.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/stepfun-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/cohere.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/cohere-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/nvidia.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/nvidia-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/microsoft.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/microsoft-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/stability.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/stability-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/flux.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/openrouter.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/aws.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/aws-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/google.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/google-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/xiaomimimo.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/internlm.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/internlm-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/jina.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/voyage.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/voyage-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/fireworks.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/fireworks-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/together.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/together-color.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/ollama.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/huggingface.svg',
+    '../../node_modules/@lobehub/icons-static-svg/icons/huggingface-color.svg',
+  ],
+  { eager: true, query: '?url', import: 'default' },
+) as Record<string, string>
+
+const ICON_BY_FILE = (() => {
+  const map = new Map<string, string>()
+  for (const [path, url] of Object.entries(ICON_URLS)) {
+    const file = path.split('/').pop()
+    if (file) map.set(file, url)
+  }
+  return map
+})()
 
 type Mapping = {
   /** LobeHub static icon id (lowercase), e.g. "openai", "claude" */
@@ -25,13 +126,13 @@ const MODEL_MAPPINGS: Mapping[] = [
   { id: 'openai', color: false, keywords: ['o1-', '^o1', '/o1', 'o3-', '^o3', '/o3', 'o4-', '^o4', '/o4'] },
   { id: 'openai', color: false, keywords: ['gpt-3', 'gpt-4', 'gpt-5', '^gpt-', '/gpt-', 'openai'] },
   { id: 'claude', color: true, keywords: ['claude'] },
-  { id: 'anthropic', color: true, keywords: ['anthropic'] },
+  { id: 'anthropic', color: false, keywords: ['anthropic'] },
   { id: 'gemini', color: true, keywords: ['gemini'] },
   { id: 'gemma', color: true, keywords: ['gemma'] },
   { id: 'deepmind', color: true, keywords: ['^imagen-', '/imagen-', 'deepmind'] },
   { id: 'deepseek', color: true, keywords: ['deepseek'] },
   { id: 'qwen', color: true, keywords: ['qwen', 'qwq', 'qvq', 'tongyi'] },
-  { id: 'moonshot', color: true, keywords: ['kimi', 'moonshot'] },
+  { id: 'moonshot', color: false, keywords: ['kimi', 'moonshot'] },
   { id: 'mistral', color: true, keywords: ['mistral', 'mixtral', 'codestral', 'pixtral', 'ministral', 'magistral', 'devstral', 'voxtral'] },
   { id: 'meta', color: true, keywords: ['llama', '/l3'] },
   { id: 'llava', color: true, keywords: ['llava'] },
@@ -39,7 +140,7 @@ const MODEL_MAPPINGS: Mapping[] = [
   { id: 'perplexity', color: true, keywords: ['pplx', 'sonar', 'perplexity'] },
   { id: 'yi', color: true, keywords: ['^yi-', '/yi-', '-yi-'] },
   { id: 'minimax', color: true, keywords: ['minimax', 'abab'] },
-  { id: 'zai', color: true, keywords: ['^glm-5', '/glm-5', '-glm-5', '^glm-4', '/glm-4', '-glm-4', '/glm4', '/glm5'] },
+  { id: 'zai', color: false, keywords: ['^glm-5', '/glm-5', '-glm-5', '^glm-4', '/glm-4', '-glm-4', '/glm4', '/glm5'] },
   { id: 'chatglm', color: true, keywords: ['chatglm', '^glm-', '/glm-', '-glm-'] },
   { id: 'doubao', color: true, keywords: ['doubao-', '^ep-'] },
   { id: 'hunyuan', color: true, keywords: ['hunyuan'] },
@@ -51,22 +152,27 @@ const MODEL_MAPPINGS: Mapping[] = [
   { id: 'nvidia', color: true, keywords: ['nemotron', 'nv-', 'nvidia'] },
   { id: 'microsoft', color: true, keywords: ['wizardlm', '/phi-', '^phi-', '-phi-', 'mai-', 'microsoft'] },
   { id: 'stability', color: true, keywords: ['stable-diffusion', 'sdxl', 'stablelm', '^sd3', '^sd2', '^sd1'] },
-  { id: 'flux', color: true, keywords: ['flux'] },
-  { id: 'openrouter', color: true, keywords: ['^openrouter', 'openrouter'] },
+  { id: 'flux', color: false, keywords: ['flux'] },
+  { id: 'openrouter', color: false, keywords: ['^openrouter', 'openrouter'] },
   { id: 'aws', color: true, keywords: ['titan', 'bedrock', 'amazon'] },
   { id: 'google', color: true, keywords: ['google', 'learnlm'] },
-  { id: 'xiaomimimo', color: true, keywords: ['^mimo-', '/mimo-'] },
+  { id: 'xiaomimimo', color: false, keywords: ['^mimo-', '/mimo-'] },
   { id: 'internlm', color: true, keywords: ['internlm', 'internvl'] },
-  { id: 'jina', color: true, keywords: ['^jina', '/jina'] },
+  { id: 'jina', color: false, keywords: ['^jina', '/jina'] },
   { id: 'voyage', color: true, keywords: ['voyage'] },
   { id: 'fireworks', color: true, keywords: ['fireworks'] },
   { id: 'together', color: true, keywords: ['together'] },
-  { id: 'ollama', color: true, keywords: ['ollama'] },
+  { id: 'ollama', color: false, keywords: ['ollama'] },
   { id: 'huggingface', color: true, keywords: ['huggingface', 'hf.co', 'hugging'] },
 ]
 
-// Icons known to lack a -color.svg asset on the static pack.
-const NO_COLOR = new Set(['openai', 'grok', 'metagpt'])
+function resolveIconUrl(id: string, preferColor: boolean): string | null {
+  if (preferColor) {
+    const color = ICON_BY_FILE.get(`${id}-color.svg`)
+    if (color) return color
+  }
+  return ICON_BY_FILE.get(`${id}.svg`) ?? null
+}
 
 export function resolveLobeIconId(model: string): { id: string; color: boolean } {
   const value = model.trim().toLowerCase()
@@ -80,7 +186,7 @@ export function resolveLobeIconId(model: string): { id: string; color: boolean }
         return value.includes(kw.toLowerCase())
       }
     })) {
-      const color = Boolean(item.color) && !NO_COLOR.has(item.id)
+      const color = Boolean(item.color) && ICON_BY_FILE.has(`${item.id}-color.svg`)
       return { id: item.id, color }
     }
   }
@@ -88,10 +194,15 @@ export function resolveLobeIconId(model: string): { id: string; color: boolean }
   return { id: 'openai', color: false }
 }
 
-export function getLobeIconUrl(model: string, preferColor = true): string {
+export function getLobeIconUrl(model: string, preferColor = true): string | null {
   const resolved = resolveLobeIconId(model)
-  const useColor = preferColor && resolved.color
-  return `${LOBE_ICON_BASE}/${resolved.id}${useColor ? '-color' : ''}.svg`
+  return resolveIconUrl(resolved.id, preferColor && resolved.color)
+}
+
+/** Explicit file lookup for non-model brand icons (e.g. claudecode-color.svg). */
+export function getLobeIconFileUrl(fileName: string): string | null {
+  const name = fileName.endsWith('.svg') ? fileName : `${fileName}.svg`
+  return ICON_BY_FILE.get(name) ?? null
 }
 
 function modelInitials(model: string): string {
@@ -140,9 +251,9 @@ export default function ModelLogo({
   const src = useMemo(() => {
     if (failed && triedMono) return null
     if (failed || triedMono || !resolved.color) {
-      return `${LOBE_ICON_BASE}/${resolved.id}.svg`
+      return resolveIconUrl(resolved.id, false)
     }
-    return `${LOBE_ICON_BASE}/${resolved.id}-color.svg`
+    return resolveIconUrl(resolved.id, true)
   }, [failed, resolved.color, resolved.id, triedMono])
 
   const pad = variant === 'plain' ? 0 : Math.max(4, Math.round(size * 0.18))
@@ -192,14 +303,13 @@ export default function ModelLogo({
         draggable={false}
         className={cn(
           'object-contain',
-          // Mono OpenAI mark is black; invert in dark mode for contrast.
+          // Mono OpenAI / Grok marks are dark; invert in dark mode for contrast.
           resolved.id === 'openai' && 'dark:invert dark:opacity-90',
           resolved.id === 'grok' && 'dark:invert dark:opacity-90',
         )}
         style={{ width: iconSize, height: iconSize }}
         loading="lazy"
         decoding="async"
-        referrerPolicy="no-referrer"
         onError={() => {
           if (!triedMono && resolved.color) {
             setTriedMono(true)

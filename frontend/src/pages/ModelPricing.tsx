@@ -108,6 +108,20 @@ function formatPriceDisplay(value: number): string {
   return fixed
 }
 
+/** 定价列表置顶：gpt-5.6-sol → terra → luna。 */
+const PREFERRED_MODEL_ORDER = ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'] as const
+
+function modelPreferredRank(model: string): number {
+  const lower = model.trim().toLowerCase()
+  for (let i = 0; i < PREFERRED_MODEL_ORDER.length; i += 1) {
+    const preferred = PREFERRED_MODEL_ORDER[i]
+    if (lower === preferred || lower.startsWith(`${preferred}-`) || lower.startsWith(`${preferred}(`)) {
+      return i
+    }
+  }
+  return -1
+}
+
 /** 从模型名提取数字段（gpt-5.6-luna → [5,6]），用于新→旧排序。 */
 function modelVersionParts(model: string): number[] {
   const matches = model.match(/\d+/g)
@@ -115,9 +129,17 @@ function modelVersionParts(model: string): number[] {
   return matches.map((m) => Number(m)).filter((n) => Number.isFinite(n))
 }
 
-/** 比较模型名：版本号高的在前；同版本再按字典序。 */
+/** 比较模型名：置顶 sol/terra/luna，其余版本号高的在前；同版本再按字典序。 */
 function compareModelsNewestFirst(a: string, b: string): number {
   if (a === b) return 0
+  const ra = modelPreferredRank(a)
+  const rb = modelPreferredRank(b)
+  if (ra >= 0 || rb >= 0) {
+    if (ra < 0) return 1
+    if (rb < 0) return -1
+    if (ra !== rb) return ra - rb
+    return a.localeCompare(b)
+  }
   const va = modelVersionParts(a)
   const vb = modelVersionParts(b)
   if (va.length === 0 && vb.length === 0) return a.localeCompare(b)

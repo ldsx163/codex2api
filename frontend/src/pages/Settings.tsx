@@ -1684,12 +1684,75 @@ export default function Settings() {
   const [activeSection, setActiveSection] = useState<string>('settings-overview')
   const [endpointsOpen, setEndpointsOpen] = useState(false)
   const [modelPanel, setModelPanel] = useState<ModelPanelKey | null>(null)
+  // 点击跳转时短暂锁定，避免 smooth scroll 过程中 scroll-spy 来回闪。
+  const sectionClickLockRef = useRef(false)
+  const settingsNavRef = useRef<HTMLElement | null>(null)
+
   const scrollToSection = useCallback((id: string) => {
     const el = document.getElementById(id)
     if (!el) return
+    sectionClickLockRef.current = true
     setActiveSection(id)
     el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    window.setTimeout(() => {
+      sectionClickLockRef.current = false
+    }, 800)
   }, [])
+
+  // 滚动时根据当前视口位置高亮对应顶栏模块（scroll-spy）。
+  useEffect(() => {
+    const sectionIds = settingsSections.map((section) => section.id)
+
+    const resolveActiveSection = () => {
+      if (sectionClickLockRef.current) return
+
+      // 固定顶栏下方的“阅读线”：已滚过该线的最后一个 section 视为当前模块。
+      const marker = Math.max(96, Math.round(window.innerHeight * 0.16))
+      const markerY = window.scrollY + marker
+
+      // 必须按文档位置排序，不能按导航数组顺序（页面区块与 tab 顺序可能不一致）。
+      const positioned: Array<{ id: string; y: number }> = []
+      for (const id of sectionIds) {
+        const el = document.getElementById(id)
+        if (!el) continue
+        positioned.push({
+          id,
+          y: el.getBoundingClientRect().top + window.scrollY,
+        })
+      }
+      positioned.sort((a, b) => a.y - b.y)
+
+      let current = positioned[0]?.id ?? 'settings-overview'
+      for (const item of positioned) {
+        if (item.y <= markerY + 1) current = item.id
+      }
+
+      // 接近页底时强制高亮文档中最后一节，避免末段高度不够顶不到阅读线。
+      const doc = document.documentElement
+      const nearBottom = window.scrollY + window.innerHeight >= doc.scrollHeight - 32
+      if (nearBottom && positioned.length > 0) {
+        current = positioned[positioned.length - 1].id
+      }
+
+      setActiveSection((prev) => (prev === current ? prev : current))
+    }
+
+    resolveActiveSection()
+    window.addEventListener('scroll', resolveActiveSection, { passive: true })
+    window.addEventListener('resize', resolveActiveSection)
+    return () => {
+      window.removeEventListener('scroll', resolveActiveSection)
+      window.removeEventListener('resize', resolveActiveSection)
+    }
+  }, [settingsSections])
+
+  // 当前模块变化时，把对应 pill 滚进顶栏可视区（窄屏横向滚动导航）。
+  useEffect(() => {
+    const nav = settingsNavRef.current
+    if (!nav) return
+    const btn = nav.querySelector<HTMLElement>(`[data-section-id="${activeSection}"]`)
+    btn?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' })
+  }, [activeSection])
 
   if (showInitialSkeleton) {
     return <SettingsSkeleton />
@@ -1717,6 +1780,7 @@ export default function Settings() {
           )}
         >
           <nav
+            ref={settingsNavRef}
             aria-label={t('settings.navLabel')}
             className={cn(
               'flex min-w-0 flex-1 items-center gap-1 overflow-x-auto rounded-full border border-border/80 bg-card/95 p-1.5 shadow-[0_10px_40px_hsl(222_30%_12%/0.12)] backdrop-blur-xl',
@@ -1730,6 +1794,8 @@ export default function Settings() {
                 <button
                   key={section.id}
                   type="button"
+                  data-section-id={section.id}
+                  aria-current={active ? 'true' : undefined}
                   onClick={() => scrollToSection(section.id)}
                   className={cn(
                     'inline-flex shrink-0 items-center gap-2 rounded-full px-3.5 py-2 text-[13px] font-semibold tracking-tight transition-all duration-200 sm:px-4 sm:py-2.5 sm:text-sm',

@@ -61,12 +61,14 @@ func TestParseModelPricingPayloadModelsDev(t *testing.T) {
 		t.Fatalf("unexpected long-context tier: %+v", ov)
 	}
 
-	// gpt-5.6-terra 规范键为 gpt-5.4：精确 ID 条目优先，别名不覆盖正主价。
+	// gpt-5.6-terra 独立规范键，与 gpt-5.4 互不影响。
 	if ov44 := got["gpt-5.4"]; ov44.Input != 2.5 {
-		t.Fatalf("alias overrode exact entry: %+v", ov44)
+		t.Fatalf("gpt-5.4 should keep exact entry: %+v", ov44)
 	}
-	if _, ok := got["gpt-5.6-terra"]; ok {
-		t.Fatalf("alias key should collapse into canonical key")
+	if ovTerra, ok := got["gpt-5.6-terra"]; !ok {
+		t.Fatalf("missing gpt-5.6-terra as independent pricing key")
+	} else if ovTerra.Input != 99 {
+		t.Fatalf("gpt-5.6-terra = %+v, want input 99", ovTerra)
 	}
 
 	// 无 cost 的模型跳过。

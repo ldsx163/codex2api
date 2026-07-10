@@ -29,9 +29,20 @@ func TestModelPricingOverride_MergeAndPrecedence(t *testing.T) {
 		t.Fatalf("gpt-5.5 leaked to %.2f, want 30", base2.OutputPricePerMToken)
 	}
 
-	// codex 别名走同一规范键：gpt-5.6-terra 归一到 gpt-5.4，受 gpt-5.4 覆盖影响。
-	if terra := GetModelPricing("gpt-5.6-terra"); terra.OutputPricePerMToken != 99.0 {
-		t.Fatalf("terra should follow gpt-5.4 override, got %.2f", terra.OutputPricePerMToken)
+	// gpt-5.6-terra 是独立规范键：不跟随 gpt-5.4 的 custom 覆盖。
+	if terra := GetModelPricing("gpt-5.6-terra"); terra.OutputPricePerMToken != 15.0 {
+		t.Fatalf("terra should keep own default 15, got %.2f", terra.OutputPricePerMToken)
+	}
+	// terra 自身覆盖可独立生效。
+	SetModelPricingOverrides(map[string]ModelPricingOverride{
+		"gpt-5.4":       {Source: ModelPricingSourceCustom, Output: 99.0},
+		"gpt-5.6-terra": {Source: ModelPricingSourceCustom, Output: 42.0},
+	})
+	if terra := GetModelPricing("gpt-5.6-terra"); terra.OutputPricePerMToken != 42.0 {
+		t.Fatalf("terra override = %.2f, want 42", terra.OutputPricePerMToken)
+	}
+	if gpt54 := GetModelPricing("gpt-5.4"); gpt54.OutputPricePerMToken != 99.0 {
+		t.Fatalf("gpt-5.4 override = %.2f, want 99", gpt54.OutputPricePerMToken)
 	}
 
 	// 清空覆盖 → 回退代码默认。

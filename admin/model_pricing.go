@@ -17,6 +17,28 @@ import (
 // modelVersionNumberRE 提取模型名中的数字段，用于版本排序（如 gpt-5.6-luna → 5,6）。
 var modelVersionNumberRE = regexp.MustCompile(`\d+`)
 
+// preferredBillingModelOrder 定价列表置顶顺序：gpt-5.6 sol → terra → luna。
+var preferredBillingModelOrder = []string{
+	"gpt-5.6-sol",
+	"gpt-5.6-terra",
+	"gpt-5.6-luna",
+}
+
+// modelPreferredRank 返回置顶优先级（越小越靠前）；非置顶模型返回 -1。
+func modelPreferredRank(model string) int {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	for i, preferred := range preferredBillingModelOrder {
+		if lower == preferred {
+			return i
+		}
+		// 变体后缀 / 思考强度别名：gpt-5.6-sol-high、gpt-5.6-sol(xhigh)
+		if strings.HasPrefix(lower, preferred+"-") || strings.HasPrefix(lower, preferred+"(") {
+			return i
+		}
+	}
+	return -1
+}
+
 // modelVersionParts 从模型 ID 中取出数字序列，供新→旧排序使用。
 func modelVersionParts(model string) []int {
 	matches := modelVersionNumberRE.FindAllString(model, -1)
@@ -34,12 +56,32 @@ func modelVersionParts(model string) []int {
 	return parts
 }
 
-// compareModelKeysNewestFirst 比较两个模型键：版本号高的靠前；同版本再按名称字典序。
+// compareModelKeysNewestFirst 比较两个模型键：
+// 1) 置顶模型（sol/terra/luna）固定靠前；
+// 2) 其余按版本号从新到旧；同版本再按名称字典序。
 // 返回 -1 表示 a 应排在 b 前面，1 表示 a 在 b 后面，0 表示相等。
 func compareModelKeysNewestFirst(a, b string) int {
 	if a == b {
 		return 0
 	}
+	ra, rb := modelPreferredRank(a), modelPreferredRank(b)
+	if ra >= 0 || rb >= 0 {
+		if ra < 0 {
+			return 1
+		}
+		if rb < 0 {
+			return -1
+		}
+		if ra != rb {
+			if ra < rb {
+				return -1
+			}
+			return 1
+		}
+		// 同置顶组内按名称稳定排序（sol-high 跟在 sol 后等）。
+		return strings.Compare(a, b)
+	}
+
 	va, vb := modelVersionParts(a), modelVersionParts(b)
 	// 无版本号的模型沉底。
 	if len(va) == 0 && len(vb) == 0 {
