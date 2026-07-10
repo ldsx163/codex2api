@@ -666,6 +666,7 @@ type accountResponse struct {
 	BaseURL                  string                     `json:"base_url,omitempty"`
 	Models                   []string                   `json:"models,omitempty"`
 	ModelMapping             string                     `json:"model_mapping,omitempty"`
+	CodexClientMetadataMode  string                     `json:"codex_client_metadata_mode,omitempty"`
 	CustomHeaders            map[string]string          `json:"custom_headers,omitempty"`
 	HealthTier               string                     `json:"health_tier"`
 	SchedulerScore           float64                    `json:"scheduler_score"`
@@ -817,6 +818,10 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 		if isOpenAIResponsesAccount && planType == "" {
 			planType = "api"
 		}
+		codexClientMetadataMode := ""
+		if isOpenAIResponsesAccount {
+			codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
+		}
 		resp := accountResponse{
 			ID:                       row.ID,
 			Name:                     row.Name,
@@ -837,6 +842,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			BaseURL:                  baseURL,
 			Models:                   row.GetCredentialStringSlice("models"),
 			ModelMapping:             row.GetCredential("model_mapping"),
+			CodexClientMetadataMode:  codexClientMetadataMode,
 			CustomHeaders:            row.GetCredentialStringMap("custom_headers"),
 			ProxyURL:                 row.ProxyURL,
 			Enabled:                  row.Enabled,
@@ -2399,13 +2405,14 @@ func (h *Handler) streamAddATAccounts(c *gin.Context, req addATAccountReq, token
 }
 
 type addOpenAIResponsesAccountReq struct {
-	Name          string            `json:"name"`
-	BaseURL       string            `json:"base_url"`
-	APIKey        string            `json:"api_key"`
-	Models        []string          `json:"models"`
-	ModelMapping  string            `json:"model_mapping"`
-	ProxyURL      string            `json:"proxy_url"`
-	CustomHeaders map[string]string `json:"custom_headers"`
+	Name                    string            `json:"name"`
+	BaseURL                 string            `json:"base_url"`
+	APIKey                  string            `json:"api_key"`
+	Models                  []string          `json:"models"`
+	ModelMapping            string            `json:"model_mapping"`
+	CodexClientMetadataMode *string           `json:"codex_client_metadata_mode"`
+	ProxyURL                string            `json:"proxy_url"`
+	CustomHeaders           map[string]string `json:"custom_headers"`
 }
 
 type fetchOpenAIResponsesModelsReq struct {
@@ -2462,6 +2469,14 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	codexClientMetadataMode := auth.CodexClientMetadataModeAuto
+	if req.CodexClientMetadataMode != nil {
+		if !auth.IsValidCodexClientMetadataMode(*req.CodexClientMetadataMode) {
+			writeError(c, http.StatusBadRequest, "codex_client_metadata_mode 必须是 auto、always 或 off")
+			return
+		}
+		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(*req.CodexClientMetadataMode)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -2487,13 +2502,14 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 		name = "openai-responses"
 	}
 	credentials := map[string]interface{}{
-		"upstream_type": auth.UpstreamOpenAIResponses,
-		"base_url":      baseURL,
-		"api_key":       req.APIKey,
-		"models":        models,
-		"model_mapping": modelMapping,
-		"plan_type":     "api",
-		"email":         baseURL,
+		"upstream_type":              auth.UpstreamOpenAIResponses,
+		"base_url":                   baseURL,
+		"api_key":                    req.APIKey,
+		"models":                     models,
+		"model_mapping":              modelMapping,
+		"codex_client_metadata_mode": codexClientMetadataMode,
+		"plan_type":                  "api",
+		"email":                      baseURL,
 	}
 	if len(customHeaders) > 0 {
 		credentials["custom_headers"] = cloneCustomHeaders(customHeaders)
@@ -2506,17 +2522,18 @@ func (h *Handler) AddOpenAIResponsesAccount(c *gin.Context) {
 	h.db.InsertAccountEventAsync(id, "added", "manual_openai_responses")
 
 	h.store.AddAccount(&auth.Account{
-		DBID:          id,
-		ProxyURL:      req.ProxyURL,
-		HealthTier:    auth.HealthTierHealthy,
-		UpstreamType:  auth.UpstreamOpenAIResponses,
-		BaseURL:       baseURL,
-		APIKey:        req.APIKey,
-		Models:        models,
-		ModelMapping:  modelMapping,
-		CustomHeaders: customHeaders,
-		Email:         baseURL,
-		PlanType:      "api",
+		DBID:                    id,
+		ProxyURL:                req.ProxyURL,
+		HealthTier:              auth.HealthTierHealthy,
+		UpstreamType:            auth.UpstreamOpenAIResponses,
+		BaseURL:                 baseURL,
+		APIKey:                  req.APIKey,
+		Models:                  models,
+		ModelMapping:            modelMapping,
+		CodexClientMetadataMode: codexClientMetadataMode,
+		CustomHeaders:           customHeaders,
+		Email:                   baseURL,
+		PlanType:                "api",
 	})
 
 	security.SecurityAuditLog("OPENAI_RESPONSES_ACCOUNT_ADDED", fmt.Sprintf("account_id=%d models=%d ip=%s", id, len(models), c.ClientIP()))
@@ -2648,6 +2665,14 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err.Error())
 		return
 	}
+	codexClientMetadataMode := auth.NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
+	if req.CodexClientMetadataMode != nil {
+		if !auth.IsValidCodexClientMetadataMode(*req.CodexClientMetadataMode) {
+			writeError(c, http.StatusBadRequest, "codex_client_metadata_mode 必须是 auto、always 或 off")
+			return
+		}
+		codexClientMetadataMode = auth.NormalizeCodexClientMetadataMode(*req.CodexClientMetadataMode)
+	}
 	for _, model := range models {
 		if err := security.ValidateModelName(model); err != nil {
 			writeError(c, http.StatusBadRequest, fmt.Sprintf("模型名称无效: %s", model))
@@ -2664,13 +2689,14 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 	}
 
 	credentials := map[string]interface{}{
-		"upstream_type":  auth.UpstreamOpenAIResponses,
-		"base_url":       baseURL,
-		"models":         models,
-		"model_mapping":  modelMapping,
-		"plan_type":      "api",
-		"email":          baseURL,
-		"custom_headers": cloneCustomHeaders(customHeaders),
+		"upstream_type":              auth.UpstreamOpenAIResponses,
+		"base_url":                   baseURL,
+		"models":                     models,
+		"model_mapping":              modelMapping,
+		"codex_client_metadata_mode": codexClientMetadataMode,
+		"plan_type":                  "api",
+		"email":                      baseURL,
+		"custom_headers":             cloneCustomHeaders(customHeaders),
 	}
 	if req.APIKey != "" {
 		credentials["api_key"] = req.APIKey
@@ -2689,7 +2715,7 @@ func (h *Handler) UpdateOpenAIResponsesAccount(c *gin.Context) {
 		return
 	}
 	if h.store != nil {
-		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, req.ProxyURL)
+		h.store.ApplyOpenAIResponsesConfig(id, baseURL, req.APIKey, models, modelMapping, codexClientMetadataMode, req.ProxyURL)
 		h.store.ApplyAccountCustomHeaders(id, customHeaders)
 	}
 	h.db.InsertAccountEventAsync(id, "updated", "manual_openai_responses")

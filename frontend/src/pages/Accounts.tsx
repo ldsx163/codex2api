@@ -23,6 +23,7 @@ import type {
   AddAccountRequest,
   AddATAccountRequest,
   AddOpenAIResponsesAccountRequest,
+  CodexClientMetadataMode,
   UpdateOpenAIResponsesAccountRequest,
   APIKeyRow,
   OpsOverviewResponse,
@@ -773,6 +774,7 @@ export default function Accounts() {
       base_url: "https://api.openai.com",
       api_key: "",
       models: [],
+      codex_client_metadata_mode: "auto",
       proxy_url: "",
     });
   const [openAIModelDraft, setOpenAIModelDraft] = useState("");
@@ -842,6 +844,7 @@ export default function Accounts() {
       base_url: "https://api.openai.com",
       api_key: "",
       models: [],
+      codex_client_metadata_mode: "auto",
       proxy_url: "",
     });
   const [openAIModelMappingText, setOpenAIModelMappingText] = useState("");
@@ -2039,6 +2042,7 @@ export default function Accounts() {
         base_url: "https://api.openai.com",
         api_key: "",
         models: [],
+        codex_client_metadata_mode: "auto",
         proxy_url: "",
       });
       setOpenAIModelDraft("");
@@ -3323,6 +3327,8 @@ export default function Accounts() {
       base_url: account.base_url || "https://api.openai.com",
       api_key: "",
       models: account.models ?? [],
+      codex_client_metadata_mode:
+        account.codex_client_metadata_mode ?? "auto",
       proxy_url: account.proxy_url ?? "",
     });
     setEditOpenAIModelDraft("");
@@ -3366,6 +3372,7 @@ export default function Accounts() {
       base_url: "https://api.openai.com",
       api_key: "",
       models: [],
+      codex_client_metadata_mode: "auto",
       proxy_url: "",
     });
     setEditOpenAIModelDraft("");
@@ -5471,6 +5478,37 @@ export default function Accounts() {
                   />
                 </div>
                 <div>
+                  <label className="block mb-2 text-sm font-semibold text-muted-foreground">
+                    {t("accounts.codexClientMetadataMode")}
+                  </label>
+                  <Select
+                    value={
+                      openAIForm.codex_client_metadata_mode ?? "auto"
+                    }
+                    onValueChange={(value) =>
+                      setOpenAIForm((form) => ({
+                        ...form,
+                        codex_client_metadata_mode:
+                          value as CodexClientMetadataMode,
+                      }))
+                    }
+                    options={[
+                      {
+                        value: "auto",
+                        label: t("accounts.codexClientMetadataAuto"),
+                      },
+                      {
+                        value: "always",
+                        label: t("accounts.codexClientMetadataAlways"),
+                      },
+                      {
+                        value: "off",
+                        label: t("accounts.codexClientMetadataOff"),
+                      },
+                    ]}
+                  />
+                </div>
+                <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <label className="text-sm font-semibold text-muted-foreground">
                       {t("accounts.openaiModels")} *
@@ -6282,6 +6320,37 @@ export default function Accounts() {
                             api_key: event.target.value,
                           }))
                         }
+                      />
+                    </div>
+                    <div>
+                      <label className="block mb-2 text-sm font-semibold text-muted-foreground">
+                        {t("accounts.codexClientMetadataMode")}
+                      </label>
+                      <Select
+                        value={
+                          editOpenAIForm.codex_client_metadata_mode ?? "auto"
+                        }
+                        onValueChange={(value) =>
+                          setEditOpenAIForm((form) => ({
+                            ...form,
+                            codex_client_metadata_mode:
+                              value as CodexClientMetadataMode,
+                          }))
+                        }
+                        options={[
+                          {
+                            value: "auto",
+                            label: t("accounts.codexClientMetadataAuto"),
+                          },
+                          {
+                            value: "always",
+                            label: t("accounts.codexClientMetadataAlways"),
+                          },
+                          {
+                            value: "off",
+                            label: t("accounts.codexClientMetadataOff"),
+                          },
+                        ]}
                       />
                     </div>
                     <div>

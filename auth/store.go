@@ -44,6 +44,32 @@ const (
 const UpstreamOpenAIResponses = "openai_responses"
 
 const (
+	CodexClientMetadataModeAuto   = "auto"
+	CodexClientMetadataModeAlways = "always"
+	CodexClientMetadataModeOff    = "off"
+)
+
+func NormalizeCodexClientMetadataMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexClientMetadataModeAlways:
+		return CodexClientMetadataModeAlways
+	case CodexClientMetadataModeOff:
+		return CodexClientMetadataModeOff
+	default:
+		return CodexClientMetadataModeAuto
+	}
+}
+
+func IsValidCodexClientMetadataMode(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case CodexClientMetadataModeAuto, CodexClientMetadataModeAlways, CodexClientMetadataModeOff:
+		return true
+	default:
+		return false
+	}
+}
+
+const (
 	DefaultTestContent  = "hi"
 	MaxTestContentRunes = 8192
 )
@@ -60,26 +86,27 @@ func NormalizeTestContent(content string) string {
 
 // Account 运行时账号状态
 type Account struct {
-	mu             sync.RWMutex
-	DBID           int64 // 数据库 ID
-	RefreshToken   string
-	SessionToken   string
-	AccessToken    string
-	ExpiresAt      time.Time
-	AccountID      string
-	Email          string
-	PlanType       string
-	ProxyURL       string
-	CustomHeaders  map[string]string
-	UpstreamType   string
-	BaseURL        string
-	APIKey         string
-	Models         []string
-	ModelMapping   string
-	Status         AccountStatus
-	CooldownUtil   time.Time
-	CooldownReason string // rate_limited / unauthorized / 空
-	ErrorMsg       string
+	mu                      sync.RWMutex
+	DBID                    int64 // 数据库 ID
+	RefreshToken            string
+	SessionToken            string
+	AccessToken             string
+	ExpiresAt               time.Time
+	AccountID               string
+	Email                   string
+	PlanType                string
+	ProxyURL                string
+	CustomHeaders           map[string]string
+	UpstreamType            string
+	BaseURL                 string
+	APIKey                  string
+	Models                  []string
+	ModelMapping            string
+	CodexClientMetadataMode string
+	Status                  AccountStatus
+	CooldownUtil            time.Time
+	CooldownReason          string // rate_limited / unauthorized / 空
+	ErrorMsg                string
 
 	// 用量进度（从 Codex 响应头被动解析）
 	UsagePercent7d      float64 // 7d 窗口使用率 0-100+
@@ -323,6 +350,15 @@ func (a *Account) OpenAIResponsesModelMapping() string {
 		return ""
 	}
 	return strings.TrimSpace(a.ModelMapping)
+}
+
+func (a *Account) OpenAIResponsesCodexClientMetadataMode() string {
+	if a == nil {
+		return CodexClientMetadataModeAuto
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return NormalizeCodexClientMetadataMode(a.CodexClientMetadataMode)
 }
 
 func (a *Account) OpenAIResponsesCredentials() (baseURL, apiKey string) {
@@ -3349,6 +3385,7 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	apiKey := row.GetCredential("api_key")
 	models := normalizeModelList(row.GetCredentialStringSlice("models"))
 	modelMapping := strings.TrimSpace(row.GetCredential("model_mapping"))
+	codexClientMetadataMode := NormalizeCodexClientMetadataMode(row.GetCredential("codex_client_metadata_mode"))
 	isOpenAIResponsesAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamOpenAIResponses) && strings.TrimSpace(baseURL) != "" && strings.TrimSpace(apiKey) != ""
 	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount {
 		log.Printf("[账号 %d] 缺少 refresh_token、session_token 和 access_token，跳过", row.ID)
@@ -3356,18 +3393,19 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 
 	account := &Account{
-		DBID:          row.ID,
-		RefreshToken:  rt,
-		SessionToken:  st,
-		ProxyURL:      strings.TrimSpace(row.ProxyURL),
-		CustomHeaders: row.GetCredentialStringMap("custom_headers"),
-		HealthTier:    HealthTierWarm,
-		AddedAt:       row.CreatedAt.UnixNano(),
-		UpstreamType:  upstreamType,
-		BaseURL:       strings.TrimRight(strings.TrimSpace(baseURL), "/"),
-		APIKey:        strings.TrimSpace(apiKey),
-		Models:        models,
-		ModelMapping:  modelMapping,
+		DBID:                    row.ID,
+		RefreshToken:            rt,
+		SessionToken:            st,
+		ProxyURL:                strings.TrimSpace(row.ProxyURL),
+		CustomHeaders:           row.GetCredentialStringMap("custom_headers"),
+		HealthTier:              HealthTierWarm,
+		AddedAt:                 row.CreatedAt.UnixNano(),
+		UpstreamType:            upstreamType,
+		BaseURL:                 strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		APIKey:                  strings.TrimSpace(apiKey),
+		Models:                  models,
+		ModelMapping:            modelMapping,
+		CodexClientMetadataMode: codexClientMetadataMode,
 	}
 	if isOpenAIResponsesAccount {
 		account.HealthTier = HealthTierHealthy
@@ -5187,7 +5225,7 @@ func (s *Store) accountAllowedForAPIKey(acc *Account, apiKeyID int64) bool {
 	return acc.AllowsAPIKey(apiKeyID) && s.APIKeyAllowsAccount(apiKeyID, acc)
 }
 
-func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, modelMapping string, proxyURL string) bool {
+func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, models []string, modelMapping, codexClientMetadataMode, proxyURL string) bool {
 	acc := s.FindByID(dbID)
 	if acc == nil {
 		return false
@@ -5201,6 +5239,7 @@ func (s *Store) ApplyOpenAIResponsesConfig(dbID int64, baseURL, apiKey string, m
 	}
 	acc.Models = normalizeModelList(models)
 	acc.ModelMapping = strings.TrimSpace(modelMapping)
+	acc.CodexClientMetadataMode = NormalizeCodexClientMetadataMode(codexClientMetadataMode)
 	acc.ProxyURL = strings.TrimSpace(proxyURL)
 	acc.Email = acc.BaseURL
 	acc.PlanType = "api"

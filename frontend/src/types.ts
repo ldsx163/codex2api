@@ -7,6 +7,7 @@ export interface ToastState {
 }
 
 export type AccountStatus = 'active' | 'ready' | 'cooldown' | 'error' | 'refreshing' | 'paused' | 'quota_paused' | string
+export type CodexClientMetadataMode = 'auto' | 'always' | 'off'
 
 export interface StatsResponse {
   total: number
@@ -40,6 +41,7 @@ export interface AccountRow {
   base_url?: string
   models?: string[]
   model_mapping?: string
+  codex_client_metadata_mode?: CodexClientMetadataMode
   custom_headers?: Record<string, string> | null
   health_tier?: string
   scheduler_score?: number
@@ -212,6 +214,7 @@ export interface AddOpenAIResponsesAccountRequest {
   api_key: string
   models: string[]
   model_mapping?: string
+  codex_client_metadata_mode?: CodexClientMetadataMode
   proxy_url: string
   custom_headers?: Record<string, string> | null
 }
@@ -222,6 +225,7 @@ export interface UpdateOpenAIResponsesAccountRequest {
   api_key?: string
   models: string[]
   model_mapping?: string
+  codex_client_metadata_mode?: CodexClientMetadataMode
   proxy_url: string
   custom_headers?: Record<string, string> | null
 }
