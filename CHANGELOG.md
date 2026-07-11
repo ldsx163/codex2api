@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.5.1 - 2026-07-11
+
+### Fixes
+
+- **Compact model-mapping regression: synthesized aliases no longer hijack generic wildcard rules, and mapping targets are stripped of `-openai-compact` before reaching the upstream (#350 regression).** v2.5.0's compact mapping resolves the endpoint-qualified `<model>-openai-compact` alias before the base model, but the alias *synthesized* for clients that sent a plain base name participated in all rule matching, with three fallouts. (1) Rules keyed on the suffixed name — which operators had copied from relay-side compact route markers (e.g. `gpt-5.6-sol-openai-compact` in a channel's model list) and which were dead letters before v2.5.0 because the suffix was stripped before matching — suddenly activated and forwarded the suffixed name verbatim upstream; relays fail to resolve it as a literal model, and compaction died with `stream disconnected before completion: stream closed before response.completed`. (2) Generic wildcard rules (`gpt-*`, `*`) matched the synthesized alias and outranked the base model's exact rule. (3) An identity suffixed→suffixed rule could knock an account that only lists the suffixed marker out of the compact pool entirely (503 no available account). Now a synthesized alias only matches rules explicitly keyed with the `-openai-compact` suffix (including `*-openai-compact` wildcards); any matched mapping target has the suffix stripped before entering the upstream body — the upstream call is always `/v1/responses/compact`, where the alias convention never applies; and the compact account filter and per-attempt rewrite share the same resolver. Verified via an A/B scenario matrix against the pre-#350 build: every configuration is restored to its pre-v2.5.0 upstream behavior, while v2.5.0's intended feature — suffixed-key rules that apply only to compaction — keeps working. Usage stats also now display the base model for suffixed requests: a bare suffix strip no longer renders as a mapping arrow (`gpt-5.6-sol-openai-compact → gpt-5.6-sol` simply shows as `gpt-5.6-sol`), which also keeps pricing lookups on the clean base name.
+
 ## v2.5.0 - 2026-07-11
 
 ### Features
