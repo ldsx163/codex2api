@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.6.0 - 2026-07-11
+
+### Features
+
+- **Per-account scheduling priority (#358).** Each account gains a scheduler priority (-100 to 100, default 0), editable in the account scheduler drawer or via `PATCH /accounts/:id/scheduler` (`scheduler_priority`, null resets; hot-applied without restart). Higher-priority accounts are scheduled **strictly first** — lower priorities only serve when every higher-priority account is unavailable (cooldown, paused, concurrency-saturated) — while accounts at the same priority keep competing on the existing health-tier + dispatch-score rules. Typical use: give official OAuth accounts a positive priority (or relay/API-key channels a negative one) so relays act purely as fallback, i.e. "use up the official accounts before touching the relay". The value is stored in the account credentials JSON (no schema migration); FastScheduler mode gets the same semantics via priority-descending segments inside each health bucket (round-robin preserved within a segment). Default 0 keeps existing deployments byte-identical.
+- **Codex CLI standalone web search passthrough — `POST /v1/alpha/search` (#359).** Newer Codex CLI (e.g. 0.144.1) with `web_search = "live"` (or `--search`) calls a dedicated search endpoint instead of the Responses hosted tool; the gateway previously had no such route and the CLI's built-in web search 404'd. The endpoint (registered under `/v1`, prefix-less, and `/backend-api/codex` alike) now forwards to the ChatGPT backend's standalone search using a schedulable ChatGPT OAuth account's credentials — request body and response (including upstream 4xx/5xx status codes) pass through verbatim so the CLI sees real error semantics, UA/Version follow the same outbound-client-header resolution as `/responses`, and the same uTLS transport is used. Search is a model-driven retrieval turn, so the upstream timeout is 120s. Relay-only pools fast-fail with 503 (the endpoint only exists on the ChatGPT backend). Verified live against the real upstream with the codex-rs `SearchCommands` request shape (`commands.search_query[].q`): 200 with full `output` + `encrypted_output`.
+
+### Fixes
+
+- **Anthropic path preserves `max` reasoning effort for gpt-5.6 mappings (#357).** Translating Anthropic `/v1/messages` `output_config.effort` into Responses `reasoning.effort` used the model-agnostic normalizer, which unconditionally clamps `max` to `xhigh` — so Claude Code requests mapped to `gpt-5.6-sol` etc. lost `max`. The translation now passes the mapped Codex model into the same model-aware normalizer the `/v1/responses` path uses: gpt-5.6+ keeps `max`, older models still clamp to `xhigh`, all other efforts unchanged.
+
 ## v2.5.1 - 2026-07-11
 
 ### Fixes
