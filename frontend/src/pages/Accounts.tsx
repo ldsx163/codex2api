@@ -7518,8 +7518,17 @@ function RecycleBinView({
     null,
   );
   const [planFilter, setPlanFilter] = useState<
-    "all" | "pro" | "prolite" | "plus" | "team" | "free" | "api" | "unknown"
+    | "all"
+    | "pro"
+    | "prolite"
+    | "plus"
+    | "team"
+    | "k12"
+    | "free"
+    | "api"
+    | "unknown"
   >("all");
+  const [exporting, setExporting] = useState(false);
   const [showEmptyConfirm, setShowEmptyConfirm] = useState(false);
   const [emptyConfirmText, setEmptyConfirmText] = useState("");
   const [autoRestore, setAutoRestore] = useState(() => {
@@ -7538,7 +7547,7 @@ function RecycleBinView({
     DEFAULT_PAGE_SIZE_OPTIONS,
   );
 
-  const busy = batchActing || emptying || batchTesting;
+  const busy = batchActing || emptying || batchTesting || exporting;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -7797,6 +7806,65 @@ function RecycleBinView({
     }
   };
 
+  const handleExport = async (
+    format: "json" | "txt",
+    scope: "selected" | "filtered",
+  ) => {
+    const ids =
+      scope === "selected"
+        ? [...selectedIds]
+        : filteredRows.map((row) => row.id);
+    if (ids.length === 0) {
+      showToast(t("accounts.exportNoAccounts"), "error");
+      return;
+    }
+    setExporting(true);
+    try {
+      const data = await api.exportRecycleBinAccounts(ids);
+      if (data.length === 0) {
+        showToast(t("accounts.exportNoAccounts"), "error");
+        return;
+      }
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      let exportedCount = data.length;
+      if (format === "json") {
+        const blob = new Blob([JSON.stringify(data, null, 2)], {
+          type: "application/json",
+        });
+        downloadBlob(blob, `codex2api-recycle-${ts}-${data.length}.json`);
+      } else {
+        // TXT：每行一个邮箱（无邮箱则用 account_id 兜底），不导出 token。
+        const lines = data
+          .map((e) => {
+            const email = (e.email || "").trim();
+            if (email) return email;
+            return (e.account_id || "").trim();
+          })
+          .filter(Boolean);
+        if (lines.length === 0) {
+          showToast(t("accounts.exportNoAccounts"), "error");
+          return;
+        }
+        exportedCount = lines.length;
+        const blob = new Blob([`${lines.join("\n")}\n`], {
+          type: "text/plain;charset=utf-8",
+        });
+        downloadBlob(
+          blob,
+          `codex2api-recycle-emails-${ts}-${lines.length}.txt`,
+        );
+      }
+      showToast(t("accounts.exportSuccess", { count: exportedCount }));
+    } catch (error) {
+      showToast(
+        `${t("accounts.exportFailed")}: ${getErrorMessage(error)}`,
+        "error",
+      );
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const emptyKeyword = t("accounts.recycleBinEmptyKeyword");
   const emptyConfirmMatched = emptyConfirmText.trim() === emptyKeyword;
 
@@ -7849,6 +7917,32 @@ function RecycleBinView({
                 <ToggleLeft className="size-4 text-muted-foreground" />
               )}
               <span className="max-sm:hidden">{t("accounts.recycleBinAutoRestore")}</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || loading || filteredRows.length === 0}
+              onClick={() => void handleExport("json", "filtered")}
+              title={t("accounts.recycleBinExportFilteredJson")}
+            >
+              <Download className="size-3.5" />
+              <span className="max-sm:hidden">
+                {exporting
+                  ? t("accounts.recycleBinExporting")
+                  : t("accounts.recycleBinExportFilteredJson")}
+              </span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy || loading || filteredRows.length === 0}
+              onClick={() => void handleExport("txt", "filtered")}
+              title={t("accounts.recycleBinExportFilteredTxt")}
+            >
+              <FileText className="size-3.5" />
+              <span className="max-sm:hidden">
+                {t("accounts.recycleBinExportFilteredTxt")}
+              </span>
             </Button>
             <Button
               variant="outline"
@@ -7922,6 +8016,7 @@ function RecycleBinView({
                     "prolite",
                     "plus",
                     "team",
+                    "k12",
                     "free",
                     "api",
                     "unknown",
@@ -7942,9 +8037,11 @@ function RecycleBinView({
                         ? t("accounts.recycleBinPlanUnknown")
                         : key === "prolite"
                           ? "ProLite"
-                          : key === "api"
-                            ? "API"
-                            : key.charAt(0).toUpperCase() + key.slice(1)}
+                          : key === "k12"
+                            ? "K12"
+                            : key === "api"
+                              ? "API"
+                              : key.charAt(0).toUpperCase() + key.slice(1)}
                   </button>
                 ))}
               </div>
@@ -7956,6 +8053,26 @@ function RecycleBinView({
                     count: selectedIds.size,
                   })}
                 </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void handleExport("json", "selected")}
+                  title={t("accounts.recycleBinExportSelectedJson")}
+                >
+                  <Download className="size-3.5" />
+                  {t("accounts.recycleBinExportSelectedJson")}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => void handleExport("txt", "selected")}
+                  title={t("accounts.recycleBinExportSelectedTxt")}
+                >
+                  <FileText className="size-3.5" />
+                  {t("accounts.recycleBinExportSelectedTxt")}
+                </Button>
                 <Button
                   size="sm"
                   variant="outline"

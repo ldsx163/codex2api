@@ -709,7 +709,8 @@ func (m *Manager) createConnection(
 	if err != nil {
 		m.sessions.Delete(poolKey)
 		session.Close()
-		return nil, fmt.Errorf("websocket handshake failed: %w", err)
+		// bad handshake 时 resp 常非空：附带上游 HTTP 状态/ body，便于测试连接定位。
+		return nil, formatDialHandshakeError(err, resp)
 	}
 
 	// 创建连接包装

@@ -590,6 +590,13 @@ export const api = {
     if (params.ids && params.ids.length > 0) sp.set('ids', params.ids.join(','))
     return request<CPAExportEntry[]>(`/accounts/export?${sp.toString()}`)
   },
+  /** 导出回收站账号；ids 为空则导出回收站全部。 */
+  exportRecycleBinAccounts: (ids?: number[]) => {
+    const sp = new URLSearchParams()
+    if (ids && ids.length > 0) sp.set('ids', ids.join(','))
+    const q = sp.toString()
+    return request<CPAExportEntry[]>(`/accounts/recycle-bin/export${q ? `?${q}` : ''}`)
+  },
   downloadAccountAuthJSON: (id: number) =>
     requestBlob(`/accounts/${id}/auth-json`),
   migrateAccounts: (data: { url: string; admin_key: string }) =>

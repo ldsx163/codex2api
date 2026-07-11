@@ -649,13 +649,15 @@ func ExecuteRequestWebsocket(ctx context.Context, account *auth.Account, request
 
 	// 检查 HTTP 握手响应状态。WebSocket 握手成功的标准状态是 101，
 	// 但这里要包装成现有 handler 可消费的 SSE HTTP 200 响应。
-	statusCode, handshakeHeader, handshakeFailed := normalizeWebsocketHandshakeResponse(wsResp.HTTPResponse())
+	handshakeResp := wsResp.HTTPResponse()
+	statusCode, handshakeHeader, handshakeFailed := normalizeWebsocketHandshakeResponse(handshakeResp)
 	if handshakeFailed {
+		detail := formatFailedHandshakeHTTPBody(statusCode, handshakeResp)
 		wsResp.Close()
 		return &http.Response{
 			StatusCode: statusCode,
 			Header:     handshakeHeader.Clone(),
-			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf("websocket handshake failed: %d", statusCode))),
+			Body:       io.NopCloser(strings.NewReader(detail)),
 		}, nil
 	}
 

@@ -387,6 +387,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/accounts/:id", h.DeleteAccount)
 	api.GET("/accounts/health-bars", h.GetAccountHealthBars)
 	api.GET("/accounts/recycle-bin", h.ListRecycleBinAccounts)
+	api.GET("/accounts/recycle-bin/export", h.ExportRecycleBinAccounts)
 	api.DELETE("/accounts/recycle-bin", h.EmptyRecycleBin)
 	api.POST("/accounts/recycle-bin/batch-test", h.RecycleBinBatchTest)
 	api.POST("/accounts/:id/restore", h.RestoreAccount)
@@ -7839,6 +7840,59 @@ func (h *Handler) GetAccountAuthJSON(c *gin.Context) {
 	})
 }
 
+// accountRowToCPAExportEntry 将数据库账号行转为 CPA 导出条目；无凭证时返回 false。
+func accountRowToCPAExportEntry(row *database.AccountRow) (cpaExportEntry, bool) {
+	if row == nil {
+		return cpaExportEntry{}, false
+	}
+	rt := row.GetCredential("refresh_token")
+	at := row.GetCredential("access_token")
+	// AT-only accounts (没有 refresh_token,只靠 access_token,常用于规避
+	// add-phone 的 Plus 号) 也需要可导出与可迁移。仅当两个凭证都缺失才跳过。
+	if rt == "" && at == "" {
+		return cpaExportEntry{}, false
+	}
+	// account_id 在凭据中存储为 chatgpt_account_id（新字段）或 account_id（历史字段）
+	accountID := row.GetCredential("chatgpt_account_id")
+	if accountID == "" {
+		accountID = row.GetCredential("account_id")
+	}
+	return cpaExportEntry{
+		Type:                  "codex",
+		Email:                 row.GetCredential("email"),
+		PlanType:              row.GetCredential("plan_type"),
+		Codex7DUsedPercent:    row.GetCredential("codex_7d_used_percent"),
+		Codex7DResetAt:        row.GetCredential("codex_7d_reset_at"),
+		Codex5HUsedPercent:    row.GetCredential("codex_5h_used_percent"),
+		Codex5HResetAt:        row.GetCredential("codex_5h_reset_at"),
+		Codex5HUsageUpdatedAt: row.GetCredential("codex_5h_usage_updated_at"),
+		CodexUsageUpdatedAt:   row.GetCredential("codex_usage_updated_at"),
+		Expired:               row.GetCredential("expires_at"),
+		IDToken:               row.GetCredential("id_token"),
+		AccountID:             accountID,
+		AccessToken:           at,
+		LastRefresh:           row.UpdatedAt.Format(time.RFC3339),
+		RefreshToken:          rt,
+	}, true
+}
+
+func parseExportIDSet(idsParam string) map[int64]bool {
+	idsParam = strings.TrimSpace(idsParam)
+	if idsParam == "" {
+		return nil
+	}
+	idSet := make(map[int64]bool)
+	for _, s := range strings.Split(idsParam, ",") {
+		if id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
+			idSet[id] = true
+		}
+	}
+	if len(idSet) == 0 {
+		return nil
+	}
+	return idSet
+}
+
 // ExportAccounts 导出账号（CPA JSON 格式）
 func (h *Handler) ExportAccounts(c *gin.Context) {
 	filter := c.DefaultQuery("filter", "healthy")
@@ -7866,16 +7920,7 @@ func (h *Handler) ExportAccounts(c *gin.Context) {
 		return
 	}
 
-	// 按指定 ID 过滤
-	var idSet map[int64]bool
-	if idsParam != "" {
-		idSet = make(map[int64]bool)
-		for _, s := range strings.Split(idsParam, ",") {
-			if id, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err == nil {
-				idSet[id] = true
-			}
-		}
-	}
+	idSet := parseExportIDSet(idsParam)
 
 	// 构建运行时状态映射（用于健康过滤）
 	runtimeMap := make(map[int64]*auth.Account)
@@ -7896,39 +7941,43 @@ func (h *Handler) ExportAccounts(c *gin.Context) {
 				continue
 			}
 		}
-		rt := row.GetCredential("refresh_token")
-		at := row.GetCredential("access_token")
-		// AT-only accounts (没有 refresh_token,只靠 access_token,常用于规避
-		// add-phone 的 Plus 号) 也需要可导出与可迁移。仅当两个凭证都缺失才跳过。
-		if rt == "" && at == "" {
+		entry, ok := accountRowToCPAExportEntry(row)
+		if !ok {
 			continue
 		}
-		// account_id 在凭据中存储为 chatgpt_account_id（新字段）或 account_id（历史字段）
-		accountID := row.GetCredential("chatgpt_account_id")
-		if accountID == "" {
-			accountID = row.GetCredential("account_id")
-		}
-		entries = append(entries, cpaExportEntry{
-			Type:                  "codex",
-			Email:                 row.GetCredential("email"),
-			PlanType:              row.GetCredential("plan_type"),
-			Codex7DUsedPercent:    row.GetCredential("codex_7d_used_percent"),
-			Codex7DResetAt:        row.GetCredential("codex_7d_reset_at"),
-			Codex5HUsedPercent:    row.GetCredential("codex_5h_used_percent"),
-			Codex5HResetAt:        row.GetCredential("codex_5h_reset_at"),
-			Codex5HUsageUpdatedAt: row.GetCredential("codex_5h_usage_updated_at"),
-			CodexUsageUpdatedAt:   row.GetCredential("codex_usage_updated_at"),
-			Expired:               row.GetCredential("expires_at"),
-			IDToken:               row.GetCredential("id_token"),
-			AccountID:             accountID,
-			AccessToken:           at,
-			LastRefresh:           row.UpdatedAt.Format(time.RFC3339),
-			RefreshToken:          rt,
-		})
+		entries = append(entries, entry)
 	}
 
 	if entries == nil {
 		entries = []cpaExportEntry{}
+	}
+	c.JSON(http.StatusOK, entries)
+}
+
+// ExportRecycleBinAccounts 导出回收站账号（CPA JSON 格式）。
+// GET /api/admin/accounts/recycle-bin/export?ids=1,2,3
+// ids 可选：不传则导出回收站全部；传了则只导出指定 ID（须在回收站中）。
+func (h *Handler) ExportRecycleBinAccounts(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	rows, err := h.db.ListDeleted(ctx)
+	if err != nil {
+		writeError(c, http.StatusInternalServerError, "查询回收站失败: "+err.Error())
+		return
+	}
+
+	idSet := parseExportIDSet(c.Query("ids"))
+	entries := make([]cpaExportEntry, 0, len(rows))
+	for _, row := range rows {
+		if idSet != nil && !idSet[row.ID] {
+			continue
+		}
+		entry, ok := accountRowToCPAExportEntry(row)
+		if !ok {
+			continue
+		}
+		entries = append(entries, entry)
 	}
 	c.JSON(http.StatusOK, entries)
 }
