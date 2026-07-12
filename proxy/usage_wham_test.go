@@ -263,6 +263,84 @@ func TestApplyWhamUsage_PersistsSubscriptionExpiresAtWhenMemoryAlreadyMatches(t 
 	}
 }
 
+// TestApplyWhamUsage_ClearsStaleSubscriptionExpiry 验证：wham 权威返回付费 plan_type
+// 而账号存储的订阅到期时间已过去（续费后 JWT 里的旧值）时，内存与 DB 的陈旧值被清理，
+// 不再显示「已过期」。(issue #360)
+func TestApplyWhamUsage_ClearsStaleSubscriptionExpiry(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+
+	stale := time.Now().Add(-96 * time.Hour).UTC().Truncate(time.Second)
+	id, err := db.InsertAccountWithCredentials(ctx, "wham-stale-subscription", map[string]interface{}{
+		"plan_type":               "plus",
+		"subscription_expires_at": stale.Format(time.RFC3339),
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithCredentials: %v", err)
+	}
+
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "plus", AccountID: "acc", SubscriptionExpiresAt: stale}
+	// 实测 wham/usage 不返回任何订阅到期字段，这里保持缺省以贴近真实响应。
+	usage := &WhamUsage{PlanType: "plus"}
+
+	ApplyWhamUsage(store, account, usage)
+
+	if !account.SubscriptionExpiresAt.IsZero() {
+		t.Fatalf("account.SubscriptionExpiresAt = %v, want zero after stale clear", account.SubscriptionExpiresAt)
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetAccountByID: %v", err)
+	}
+	if got := row.GetCredential("subscription_expires_at"); got != "" {
+		t.Fatalf("persisted subscription_expires_at = %q, want cleared", got)
+	}
+}
+
+// TestApplyWhamUsage_KeepsExpiredSubscriptionForFreePlan 验证：套餐真到期（wham 返回
+// free）时，已过去的订阅到期时间是准确信息，保留不清理。
+func TestApplyWhamUsage_KeepsExpiredSubscriptionForFreePlan(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "codex2api.db")
+	db, err := database.New("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("database.New: %v", err)
+	}
+	defer db.Close()
+
+	expired := time.Now().Add(-96 * time.Hour).UTC().Truncate(time.Second)
+	id, err := db.InsertAccountWithCredentials(ctx, "wham-real-expired", map[string]interface{}{
+		"plan_type":               "plus",
+		"subscription_expires_at": expired.Format(time.RFC3339),
+	}, "")
+	if err != nil {
+		t.Fatalf("InsertAccountWithCredentials: %v", err)
+	}
+
+	store := auth.NewStore(db, nil, &database.SystemSettings{MaxConcurrency: 2, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: id, AccessToken: "at", PlanType: "plus", AccountID: "acc", SubscriptionExpiresAt: expired}
+	usage := &WhamUsage{PlanType: "free"}
+
+	ApplyWhamUsage(store, account, usage)
+
+	if !account.SubscriptionExpiresAt.Equal(expired) {
+		t.Fatalf("account.SubscriptionExpiresAt = %v, want unchanged %v", account.SubscriptionExpiresAt, expired)
+	}
+	row, err := db.GetAccountByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetAccountByID: %v", err)
+	}
+	if got := row.GetCredential("subscription_expires_at"); got != expired.Format(time.RFC3339) {
+		t.Fatalf("persisted subscription_expires_at = %q, want %q", got, expired.Format(time.RFC3339))
+	}
+}
+
 func TestWhamUsageSubscriptionExpiresAtFallbacks(t *testing.T) {
 	cases := []struct {
 		name string

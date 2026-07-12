@@ -4394,7 +4394,12 @@ func SyncCodexUsageState(store *auth.Store, account *auth.Account, resp *http.Re
 		return result
 	}
 	if store != nil {
-		store.UpdateAccountPlanType(account, resp.Header.Get("x-codex-plan-type"))
+		planHeader := resp.Header.Get("x-codex-plan-type")
+		store.UpdateAccountPlanType(account, planHeader)
+		// 权威付费 plan_type 与「订阅已过期」互斥，借每次响应校正陈旧到期时间。(issue #360)
+		if planHeader != "" {
+			store.ClearStaleSubscriptionExpiresAt(account)
+		}
 	}
 	result.UsageWindowLimitsIgnored = account.SkipsUsageWindowLimits()
 

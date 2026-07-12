@@ -436,6 +436,12 @@ func ApplyWhamUsage(store *auth.Store, account *auth.Account, usage *WhamUsage) 
 		}
 		store.UpdateAccountIdentity(account, usage.Email, identityAccountID)
 		store.UpdateAccountSubscriptionExpiresAt(account, usage.SubscriptionExpiresAt())
+		// wham 响应实测不含订阅到期字段（上面的同步基本拿不到值），续费后的新日期
+		// 无处可查；但服务端权威返回付费 plan_type 即证明订阅有效，把已过去的旧
+		// 到期时间清掉，避免长期误报「已过期」。(issue #360)
+		if usage.PlanType != "" {
+			store.ClearStaleSubscriptionExpiresAt(account)
+		}
 	}
 
 	// 记录「主动重置次数」（OpenAI 官方剩余的手动重置额度次数）。
