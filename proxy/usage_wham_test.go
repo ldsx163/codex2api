@@ -1119,3 +1119,29 @@ func TestConsumeResetCreditRoutesThroughResin(t *testing.T) {
 		t.Fatalf("X-Resin-Account = %q, want %q", gotResinAccount, "9")
 	}
 }
+
+// 重置券列表端点同样必须走 Resin（与用量查询/消费保持三端点全覆盖）。
+func TestQueryWhamResetCreditsRoutesThroughResin(t *testing.T) {
+	var gotPath, gotResinAccount string
+	fakeResin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotResinAccount = r.Header.Get("X-Resin-Account")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"credits":[]}`))
+	}))
+	defer fakeResin.Close()
+
+	SetResinConfig(&ResinConfig{BaseURL: fakeResin.URL, PlatformName: "test"})
+	t.Cleanup(func() { SetResinConfig(nil) })
+
+	account := &auth.Account{DBID: 13, AccessToken: "at-13"}
+	if _, _, err := QueryWhamResetCredits(context.Background(), account, ""); err != nil {
+		t.Fatalf("QueryWhamResetCredits error: %v", err)
+	}
+	if want := "/test/https/chatgpt.com/backend-api/wham/rate-limit-reset-credits"; gotPath != want {
+		t.Fatalf("resin path = %q, want %q", gotPath, want)
+	}
+	if gotResinAccount != "13" {
+		t.Fatalf("X-Resin-Account = %q, want %q", gotResinAccount, "13")
+	}
+}

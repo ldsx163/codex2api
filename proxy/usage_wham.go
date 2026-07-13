@@ -160,6 +160,18 @@ func QueryWhamUsage(ctx context.Context, account *auth.Account, proxyURL string)
 	return queryWhamUsageWithURL(ctx, account, proxyURL, url)
 }
 
+// whamHTTPClient 是 wham 三个端点共用的 Resin/直连选择：viaResin 时设置
+// X-Resin-Account 并复用按账号隔离的 Resin 连接池；否则回退网关同款
+// transport（支持 uTLS Chrome 指纹），让 wham 请求与 /responses 走一致的
+// TLS 指纹，降低被 Cloudflare 拦截的概率。
+func whamHTTPClient(req *http.Request, account *auth.Account, resinClient *http.Client, viaResin bool, proxyURL string) *http.Client {
+	if viaResin {
+		req.Header.Set("X-Resin-Account", ResinAccountID(account))
+		return resinClient
+	}
+	return &http.Client{Transport: newCodexTransport(proxyURL)}
+}
+
 func queryWhamUsageWithURL(ctx context.Context, account *auth.Account, proxyURL, url string) (*WhamUsage, *http.Response, error) {
 	if account == nil {
 		return nil, nil, fmt.Errorf("account is nil")
@@ -183,17 +195,7 @@ func queryWhamUsageWithURL(ctx context.Context, account *auth.Account, proxyURL,
 	if accountID := account.EffectiveAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
-	if viaResin {
-		req.Header.Set("X-Resin-Account", ResinAccountID(account))
-	}
-
-	// Resin 未启用时复用网关同款 transport（支持 uTLS Chrome 指纹），而非裸标准
-	// transport，让 wham 查询与 /responses 走一致的 TLS 指纹，降低被 Cloudflare
-	// 拦截的概率。
-	client := resinClient
-	if client == nil {
-		client = &http.Client{Transport: newCodexTransport(proxyURL)}
-	}
+	client := whamHTTPClient(req, account, resinClient, viaResin, proxyURL)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -306,14 +308,7 @@ func queryWhamResetCreditsWithURL(ctx context.Context, account *auth.Account, pr
 	if accountID := account.EffectiveAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
-	if viaResin {
-		req.Header.Set("X-Resin-Account", ResinAccountID(account))
-	}
-
-	client := resinClient
-	if client == nil {
-		client = &http.Client{Transport: newCodexTransport(proxyURL)}
-	}
+	client := whamHTTPClient(req, account, resinClient, viaResin, proxyURL)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -400,15 +395,7 @@ func consumeResetCreditWithURL(ctx context.Context, account *auth.Account, proxy
 	if accountID := account.EffectiveAccountID(); accountID != "" {
 		req.Header.Set("chatgpt-account-id", accountID)
 	}
-	if viaResin {
-		req.Header.Set("X-Resin-Account", ResinAccountID(account))
-	}
-
-	// Resin 未启用时用与 wham 查询、/responses 一致的 transport（支持 uTLS Chrome 指纹）。
-	client := resinClient
-	if client == nil {
-		client = &http.Client{Transport: newCodexTransport(proxyURL)}
-	}
+	client := whamHTTPClient(req, account, resinClient, viaResin, proxyURL)
 
 	resp, err := client.Do(req)
 	if err != nil {
