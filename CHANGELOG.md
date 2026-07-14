@@ -2,6 +2,10 @@
 
 ## v2.5.4 - 2026-07-14
 
+### Features
+
+- **Dashboard pool runway / 号池可支撑 (#383).** Turns the existing limit-pressure forecast into an ops-facing runway metric (~N hours / 1 day+ / under 1h) with a dashboard card, action hints, and a show/hide toggle (local preference). Forecast math lives in `frontend/src/lib/poolRunway.ts` (real long-window length, skip absent 5h samples); the accounts recovery panel reuses the same runway copy.
+
 ### Fixes
 
 - **WebSocket handshake 401s are restored to their real status code — visible in usage logs and triggering account cooldown (#378).** In forced-WS deployments an upstream 401 was completely invisible: a handshake-stage HTTP 401 was wrapped into a plain-text transport error, so usage logs only ever showed 598/transport (or the failure was masked by a silent retry), the account never received an unauthorized cooldown nor an auth probe, and a dead-token account stayed in the scheduling pool being redialed forever — the only place a 401 could surface was the HTTP-only `/v1/responses/compact` endpoint, producing the misleading "401s all concentrate on compact" pattern. The dial error now carries a structured `HandshakeHTTPError` (status code / headers / normalized JSON body; `Error()` text unchanged so connection-test consumers are unaffected), and the WS executor converts a handshake 401 into a real-status HTTP response so the existing non-2xx path takes over: the usage log records 401 with the upstream error message, `applyCooldownForModel` applies the unauthorized cooldown (`missing_scope` carve-out included), and retry moves to the next account. Non-401 handshake statuses (403/429/503) deliberately keep their transport semantics — 503 handshake rate-limiting still uses sticky retry. Mid-connection close-1008 auth death keeps its existing async `VerifyAccountAuthAsync` probe.
