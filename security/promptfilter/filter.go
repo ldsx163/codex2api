@@ -499,7 +499,8 @@ func sortedLiteralSet(literals map[string]struct{}, minRunes int) []string {
 }
 
 func Inspect(body []byte, endpoint string, cfg Config) Verdict {
-	text := ExtractText(body, endpoint, NormalizeConfig(cfg).MaxTextLength)
+	cfg = NormalizeConfig(cfg)
+	text := ExtractTextForConfig(body, endpoint, cfg)
 	return InspectText(text, cfg)
 }
 
@@ -703,6 +704,15 @@ func compiledPatternMatchIndex(text string, pattern compiledPattern) []int {
 }
 
 func ExtractText(body []byte, endpoint string, maxLen int) string {
+	return extractText(body, endpoint, maxLen, false)
+}
+
+func ExtractTextForConfig(body []byte, endpoint string, cfg Config) string {
+	cfg = NormalizeConfig(cfg)
+	return extractText(body, endpoint, cfg.MaxTextLength, cfg.Advanced.RequestScope.ScanApplicationContext)
+}
+
+func extractText(body []byte, endpoint string, maxLen int, scanApplicationContext bool) string {
 	if len(body) == 0 || !gjson.ValidBytes(body) {
 		return ""
 	}
@@ -717,16 +727,32 @@ func ExtractText(body []byte, endpoint string, maxLen int) string {
 
 	switch endpoint {
 	case "chat", "chat_completions", "/v1/chat/completions":
-		collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
+		if scanApplicationContext {
+			addResultText(gjson.GetBytes(body, "messages"))
+		} else {
+			collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
+		}
 	case "messages", "anthropic", "/v1/messages":
-		collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
+		if scanApplicationContext {
+			addResultText(gjson.GetBytes(body, "system"))
+			addResultText(gjson.GetBytes(body, "messages"))
+		} else {
+			collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
+		}
 	case "response", "responses", "/v1/responses":
-		// Top-level instructions are application-owned context for the Responses
-		// API. Scanning them causes platform safety and tool instructions to be
-		// attributed to the end user. User-controlled content remains in input.
-		collectUserMessageText(gjson.GetBytes(body, "input"), &parts)
-		addResultText(gjson.GetBytes(body, "prompt"))
-		collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
+		if scanApplicationContext {
+			addResultText(gjson.GetBytes(body, "instructions"))
+			addResultText(gjson.GetBytes(body, "input"))
+			addResultText(gjson.GetBytes(body, "prompt"))
+			addResultText(gjson.GetBytes(body, "messages"))
+		} else {
+			// Top-level instructions and non-user roles are application-owned
+			// context in the default gateway deployment. Scanning them attributes
+			// platform safety and tool instructions to the end user.
+			collectUserMessageText(gjson.GetBytes(body, "input"), &parts)
+			addResultText(gjson.GetBytes(body, "prompt"))
+			collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
+		}
 	case "image", "images", "images_generations", "images_edits", "/v1/images/generations", "/v1/images/edits":
 		addResultText(gjson.GetBytes(body, "prompt"))
 		addResultText(gjson.GetBytes(body, "style"))

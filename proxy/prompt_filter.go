@@ -26,10 +26,10 @@ func (h *Handler) inspectPromptFilterOpenAI(c *gin.Context, rawBody []byte, endp
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.Inspect(rawBody, endpoint, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
-		text := promptfilter.ExtractText(rawBody, endpoint, cfg.MaxTextLength)
+		text := promptfilter.ExtractTextForConfig(rawBody, endpoint, cfg)
 		verdict = h.reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
 	}
-	verdict = h.applyAdvancedPromptProtection(c, promptfilter.ExtractText(rawBody, endpoint, cfg.MaxTextLength), verdict, cfg)
+	verdict = h.applyAdvancedPromptProtection(c, promptfilter.ExtractTextForConfig(rawBody, endpoint, cfg), verdict, cfg)
 	h.logPromptFilterVerdict(c, endpoint, model, "local_filter", "", verdict)
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)
@@ -83,10 +83,10 @@ func (h *Handler) inspectPromptFilterAnthropic(c *gin.Context, rawBody []byte, e
 	cfg := h.store.GetPromptFilterConfig()
 	verdict := promptfilter.Inspect(rawBody, endpoint, cfg)
 	if shouldReviewPromptFilterVerdict(verdict, cfg) {
-		text := promptfilter.ExtractText(rawBody, endpoint, cfg.MaxTextLength)
+		text := promptfilter.ExtractTextForConfig(rawBody, endpoint, cfg)
 		verdict = h.reviewPromptFilterVerdict(c.Request.Context(), text, verdict, cfg)
 	}
-	verdict = h.applyAdvancedPromptProtection(c, promptfilter.ExtractText(rawBody, endpoint, cfg.MaxTextLength), verdict, cfg)
+	verdict = h.applyAdvancedPromptProtection(c, promptfilter.ExtractTextForConfig(rawBody, endpoint, cfg), verdict, cfg)
 	h.logPromptFilterVerdict(c, endpoint, model, "local_filter", "", verdict)
 	if verdict.Action == promptfilter.ActionWarn {
 		c.Header("X-Prompt-Filter-Warning", verdict.Reason)

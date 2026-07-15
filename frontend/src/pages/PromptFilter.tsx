@@ -94,6 +94,7 @@ type CustomRuleDraft = {
 type AdvancedProtectionConfig = {
   enforcement: { terminal_categories: string[] }
   normalization: { enabled: boolean; decode_url: boolean; decode_html: boolean; decode_base64: boolean; max_decode_runs: number }
+  request_scope: { scan_application_context: boolean }
   risk: { enabled: boolean; window_seconds: number; block_threshold: number; review_threshold: number; user_weight_percent: number; ip_weight_percent: number; session_weight_percent: number }
   sidecar: { enabled: boolean; base_url: string; timeout_seconds: number; fail_closed: boolean; min_score: number }
   output: { enabled: boolean; buffer_bytes: number; overlap_bytes: number; strict_only: boolean }
@@ -104,6 +105,7 @@ type AdvancedProtectionConfig = {
 const defaultAdvancedProtection: AdvancedProtectionConfig = {
   enforcement: { terminal_categories: [] },
   normalization: { enabled: false, decode_url: false, decode_html: false, decode_base64: false, max_decode_runs: 1 },
+  request_scope: { scan_application_context: false },
   risk: { enabled: false, window_seconds: 600, block_threshold: 100, review_threshold: 60, user_weight_percent: 50, ip_weight_percent: 30, session_weight_percent: 20 },
   sidecar: { enabled: false, base_url: '', timeout_seconds: 3, fail_closed: true, min_score: 30 },
   output: { enabled: false, buffer_bytes: 4096, overlap_bytes: 512, strict_only: true },
@@ -117,6 +119,7 @@ function parseAdvancedProtection(raw: string): AdvancedProtectionConfig {
     return {
       enforcement: { ...defaultAdvancedProtection.enforcement, ...(value.enforcement || {}) },
       normalization: { ...defaultAdvancedProtection.normalization, ...(value.normalization || {}) },
+      request_scope: { ...defaultAdvancedProtection.request_scope, ...(value.request_scope || {}) },
       risk: { ...defaultAdvancedProtection.risk, ...(value.risk || {}) },
       sidecar: { ...defaultAdvancedProtection.sidecar, ...(value.sidecar || {}) },
       output: { ...defaultAdvancedProtection.output, ...(value.output || {}) },
@@ -568,6 +571,12 @@ function AdvancedProtectionEditor({ value, onChange }: { value: string; onChange
         </AdvancedPanel>
 
         <AdvancedPanel title={t('promptFilter.terminalCategories')}>
+          <SwitchField
+            label={t('promptFilter.scanApplicationContext')}
+            hint={t('promptFilter.help.scanApplicationContext')}
+            checked={config.request_scope.scan_application_context}
+            onCheckedChange={(next) => setBool('request_scope', 'scan_application_context', next)}
+          />
           <CompactField label={t('promptFilter.terminalCategories')} hint={t('promptFilter.help.terminalCategories')}>
             <Input
               value={terminalCategoriesText}

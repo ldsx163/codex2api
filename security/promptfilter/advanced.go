@@ -14,12 +14,19 @@ import (
 
 type AdvancedConfig struct {
 	Normalization NormalizationConfig `json:"normalization"`
+	RequestScope  RequestScopeConfig  `json:"request_scope"`
 	Enforcement   EnforcementConfig   `json:"enforcement"`
 	Risk          RiskConfig          `json:"risk"`
 	Sidecar       SidecarConfig       `json:"sidecar"`
 	Output        OutputConfig        `json:"output"`
 	Intelligence  IntelligenceConfig  `json:"intelligence"`
 	NewAPI        NewAPIConfig        `json:"newapi"`
+}
+
+// RequestScopeConfig controls whether application-owned conversation context
+// participates in inbound prompt inspection.
+type RequestScopeConfig struct {
+	ScanApplicationContext bool `json:"scan_application_context"`
 }
 
 // NewAPIConfig controls signed identity propagation and repeat-offender directives.
