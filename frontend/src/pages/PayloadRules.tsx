@@ -799,16 +799,23 @@ export default function PayloadRules() {
 
       {/* 添加/编辑规则对话框 */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-[560px]">
+        <DialogContent className="sm:max-w-[760px]">
           <DialogHeader>
-            <DialogTitle>{editingIndex !== null ? t('payloadRules.editRule') : t('payloadRules.addRule')}</DialogTitle>
+            <DialogTitle className="flex flex-wrap items-center gap-2">
+              {editingIndex !== null ? t('payloadRules.editRule') : t('payloadRules.addRule')}
+              {templatePicked ? (
+                <Badge variant="secondary" className="text-[11px] font-semibold">
+                  {t(TEMPLATES.find((tpl) => tpl.key === form.template)?.titleKey ?? 'payloadRules.tplCustomTitle')}
+                </Badge>
+              ) : null}
+            </DialogTitle>
             <DialogDescription>
               {templatePicked ? t('payloadRules.formDesc') : t('payloadRules.pickTemplate')}
             </DialogDescription>
           </DialogHeader>
 
           {!templatePicked ? (
-            <div className="grid gap-2 sm:grid-cols-2">
+            <div className="grid gap-2.5 sm:grid-cols-2">
               {TEMPLATES.map((tpl) => {
                 const Icon = tpl.icon
                 return (
@@ -820,15 +827,15 @@ export default function PayloadRules() {
                       setTemplatePicked(true)
                     }}
                     className={cn(
-                      'flex items-start gap-2.5 rounded-xl border border-border/80 bg-background/70 p-3 text-left transition-all hover:border-primary/40 hover:bg-muted/20 hover:shadow-sm',
+                      'flex items-start gap-3 rounded-xl border border-border/80 bg-background/70 p-3.5 text-left transition-all hover:border-primary/40 hover:bg-muted/20 hover:shadow-sm',
                       tpl.key === 'custom' && 'sm:col-span-2',
                     )}
                   >
-                    <div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/15">
+                    <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/15">
                       <Icon className="size-4" />
                     </div>
                     <div className="min-w-0">
-                      <div className="text-[13px] font-semibold text-foreground">{t(tpl.titleKey)}</div>
+                      <div className="text-sm font-semibold text-foreground">{t(tpl.titleKey)}</div>
                       <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{t(tpl.descKey)}</p>
                     </div>
                   </button>
@@ -836,34 +843,41 @@ export default function PayloadRules() {
               })}
             </div>
           ) : (
-            <div className="space-y-3.5">
+            <div className="max-h-[65dvh] space-y-4 overflow-y-auto pr-1">
               {(form.template === 'appendPrompt' || form.template === 'overridePrompt') ? (
                 <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-foreground">{t('payloadRules.formText')}</label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-semibold text-foreground">{t('payloadRules.formText')}</label>
+                    <span className="text-[11px] tabular-nums text-muted-foreground">
+                      {form.promptText.length.toLocaleString()} {t('payloadRules.chars')}
+                    </span>
+                  </div>
                   <textarea
-                    rows={6}
+                    rows={12}
                     value={form.promptText}
                     placeholder={t('payloadRules.formTextPlaceholder')}
                     onChange={(e: ChangeEvent<HTMLTextAreaElement>) => setForm({ ...form, promptText: e.target.value })}
-                    className="flex w-full resize-y rounded-md border border-input bg-background px-3 py-2 text-xs leading-relaxed text-foreground shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                    className="flex min-h-[220px] w-full resize-y rounded-md border border-input bg-background px-3 py-2.5 text-[13px] leading-relaxed text-foreground shadow-xs transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
                   />
                 </div>
               ) : null}
 
               {form.template === 'serviceTier' ? (
-                <div className="space-y-1.5">
-                  <label className="text-xs font-semibold text-foreground">{t('payloadRules.formTier')}</label>
-                  <Input
-                    value={form.tierValue}
-                    placeholder="priority"
-                    className="h-8 font-mono text-xs"
-                    onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, tierValue: e.target.value })}
-                  />
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-foreground">{t('payloadRules.formTier')}</label>
+                    <Input
+                      value={form.tierValue}
+                      placeholder="priority"
+                      className="h-9 font-mono text-xs"
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, tierValue: e.target.value })}
+                    />
+                  </div>
                 </div>
               ) : null}
 
               {form.template === 'effortMap' ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-1.5">
                     <label className="text-xs font-semibold text-foreground">{t('payloadRules.formEffortFrom')}</label>
                     <Select compact value={form.effortFrom} options={EFFORT_LEVELS} onValueChange={(v) => setForm({ ...form, effortFrom: v })} />
@@ -877,27 +891,38 @@ export default function PayloadRules() {
 
               {form.template === 'custom' ? (
                 <>
-                  <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-foreground">{t('payloadRules.formGroup')}</label>
-                    <Select
-                      compact
-                      value={form.group}
-                      options={GROUP_OPTIONS.map((option) => ({ label: t(option.labelKey), value: option.value }))}
-                      onValueChange={(v) => setForm({ ...form, group: v as RuleGroup })}
-                    />
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-foreground">{t('payloadRules.formGroup')}</label>
+                      <Select
+                        compact
+                        value={form.group}
+                        options={GROUP_OPTIONS.map((option) => ({ label: t(option.labelKey), value: option.value }))}
+                        onValueChange={(v) => setForm({ ...form, group: v as RuleGroup })}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-foreground">{t('payloadRules.formModels')}</label>
+                      <Input
+                        value={form.models}
+                        placeholder={t('payloadRules.formModelsPlaceholder')}
+                        className="h-9 font-mono text-xs"
+                        onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, models: e.target.value })}
+                      />
+                    </div>
                   </div>
                   {form.group === 'filter' ? (
-                    <div className="space-y-1.5">
+                    <div className="space-y-1.5 rounded-xl border border-border/70 bg-muted/20 p-3.5">
                       <label className="text-xs font-semibold text-foreground">{t('payloadRules.formFilterPaths')}</label>
                       <Input
                         value={form.filterPaths}
                         placeholder="metadata.debug, safety_identifier"
-                        className="h-8 font-mono text-xs"
+                        className="h-9 font-mono text-xs"
                         onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, filterPaths: e.target.value })}
                       />
                     </div>
                   ) : (
-                    <div className="space-y-1.5">
+                    <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3.5">
                       <label className="text-xs font-semibold text-foreground">{t('payloadRules.formParams')}</label>
                       <KVRowsEditor
                         rows={form.paramRows}
@@ -908,7 +933,7 @@ export default function PayloadRules() {
                       />
                     </div>
                   )}
-                  <div className="space-y-1.5">
+                  <div className="space-y-2 rounded-xl border border-border/70 bg-muted/20 p-3.5">
                     <label className="text-xs font-semibold text-foreground">{t('payloadRules.formMatch')}</label>
                     <KVRowsEditor
                       rows={form.matchRows}
@@ -921,15 +946,17 @@ export default function PayloadRules() {
                 </>
               ) : null}
 
-              <div className="space-y-1.5">
-                <label className="text-xs font-semibold text-foreground">{t('payloadRules.formModels')}</label>
-                <Input
-                  value={form.models}
-                  placeholder={t('payloadRules.formModelsPlaceholder')}
-                  className="h-8 font-mono text-xs"
-                  onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, models: e.target.value })}
-                />
-              </div>
+              {form.template !== 'custom' ? (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground">{t('payloadRules.formModels')}</label>
+                  <Input
+                    value={form.models}
+                    placeholder={t('payloadRules.formModelsPlaceholder')}
+                    className="h-9 font-mono text-xs"
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setForm({ ...form, models: e.target.value })}
+                  />
+                </div>
+              ) : null}
             </div>
           )}
 
