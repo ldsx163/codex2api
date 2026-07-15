@@ -54,7 +54,9 @@ const (
 	maxImageAttempts = 5
 
 	// MaxImageEditInputCount caps the number of input images for edit requests.
-	MaxImageEditInputCount = 10
+	// 与官方 Images API 对 gpt-image 系列的上限一致（16 张）；上游 responses
+	// 通道已实测可接受 16 张 input_image（issue #275）。
+	MaxImageEditInputCount = 16
 
 	imageStreamConnectedComment = ": connected\n\n"
 	imageStreamKeepaliveComment = ": keepalive\n\n"
