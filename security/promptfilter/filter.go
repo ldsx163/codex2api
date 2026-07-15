@@ -720,7 +720,7 @@ func ExtractText(body []byte, endpoint string, maxLen int) string {
 		collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
 	case "messages", "anthropic", "/v1/messages":
 		collectUserMessageText(gjson.GetBytes(body, "messages"), &parts)
-	case "response", "responses", "/v1/responses":
+	case "response", "responses", "responses_compact", "/v1/responses", "/v1/responses/compact":
 		// Top-level instructions and non-user roles are application-owned
 		// context. Scanning them attributes platform safety and tool instructions
 		// to the end user, so only actual user prompt fields participate.
