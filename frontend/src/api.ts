@@ -1,5 +1,7 @@
 import type {
   AccountEventTrendPoint,
+  AccountPortalAuthURLResponse,
+  AccountPortalSubmitResponse,
   AccountUsageDetail,
   AddAccountRequest,
   AddATAccountRequest,
@@ -173,6 +175,44 @@ async function requestPublic<T>(path: string, options: RequestInit = {}): Promis
   return (await res.json()) as T
 }
 
+// 公开账号自助门户:无鉴权头,错误体形如 {error:{message}}。
+// 单独实现以便解析嵌套的 message 并携带 HTTP 状态码(供 404「门户未开启」判定)。
+async function requestAccountPortal<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const headers = new Headers(options.headers)
+  if (options.body !== undefined && options.body !== null && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  const res = await fetch(path, {
+    ...options,
+    cache: options.cache ?? 'no-store',
+    headers,
+  })
+
+  if (!res.ok) {
+    const body = await res.text()
+    let message = body.trim() || `HTTP ${res.status}`
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: string } | string; message?: string }
+      if (parsed && typeof parsed.error === 'object' && parsed.error?.message) {
+        message = parsed.error.message
+      } else if (typeof parsed.error === 'string' && parsed.error.trim()) {
+        message = parsed.error
+      } else if (typeof parsed.message === 'string' && parsed.message.trim()) {
+        message = parsed.message
+      }
+    } catch {
+      // 保留原始文本
+    }
+    const err = new Error(message) as Error & { status?: number }
+    err.status = res.status
+    throw err
+  }
+
+  const text = await res.text()
+  return (text ? JSON.parse(text) : undefined) as T
+}
+
 async function requestAPIKeyUsage<T>(path: string, apiKey: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)
   headers.set('Authorization', `Bearer ${apiKey}`)
@@ -292,6 +332,18 @@ function buildOpsErrorSearchParams(params: {
 
 export const api = {
   getBranding: () => requestPublic<SiteBranding>('/api/branding'),
+  // 公开账号自助门户:生成 OpenAI 授权链接(无鉴权)。
+  generateAccountPortalAuthURL: (data: { contact_email: string }) =>
+    requestAccountPortal<AccountPortalAuthURLResponse>('/api/account-portal/generate-auth-url', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  // 公开账号自助门户:提交授权码(无鉴权)。
+  submitAccountPortalCode: (data: { session_id: string; code: string; state: string }) =>
+    requestAccountPortal<AccountPortalSubmitResponse>('/api/account-portal/submit-code', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   getPublicAPIKeyUsage: (apiKey: string, range = '30d', params: { page?: number; pageSize?: number } = {}) => {
     const search = new URLSearchParams()
     search.set('range', range)
@@ -346,6 +398,8 @@ export const api = {
     request<MessageResponse>(`/accounts/${id}/openai-responses`, { method: 'PATCH', body: JSON.stringify(data) }),
   deleteAccount: (id: number) =>
     request<MessageResponse>(`/accounts/${id}`, { method: 'DELETE' }),
+  updateAccountNote: (id: number, note: string) =>
+    request<MessageResponse>(`/accounts/${id}/note`, { method: 'PATCH', body: JSON.stringify({ note }) }),
   getRecycleBinAccounts: () =>
     request<RecycleBinAccountsResponse>('/accounts/recycle-bin'),
   restoreAccount: (id: number) =>

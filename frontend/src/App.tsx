@@ -20,6 +20,7 @@ const Docs = lazy(() => import('./pages/Docs'))
 const APIKeys = lazy(() => import('./pages/APIKeys'))
 const APIKeyUsagePortal = lazy(() => import('./pages/APIKeyUsagePortal'))
 const ImageStudioPortal = lazy(() => import('./pages/ImageStudioPortal'))
+const AccountPortal = lazy(() => import('./pages/AccountPortal'))
 const Usage = lazy(() => import('./pages/Usage'))
 const ImageStudio = lazy(() => import('./pages/ImageStudio'))
 const PromptFilter = lazy(() => import('./pages/PromptFilter'))
@@ -39,6 +40,8 @@ export default function App() {
                 <Route path="/key-usage/:view" element={<APIKeyUsagePortal />} />
                 <Route path="/image-studio" element={<Navigate to="/image-studio/studio" replace />} />
                 <Route path="/image-studio/:view" element={<ImageStudioPortal />} />
+                <Route path="/account-portal" element={<Navigate to="/account-portal/submit" replace />} />
+                <Route path="/account-portal/:view" element={<AccountPortal />} />
                 <Route path="/*" element={<AdminApp />} />
               </Routes>
             </Suspense>

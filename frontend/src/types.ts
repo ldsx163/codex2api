@@ -54,6 +54,8 @@ export interface AccountRow {
   dynamic_concurrency_limit?: number
   allowed_api_key_ids?: number[]
   tags?: string[]
+  // 通用备注;自助提交的账号会带上「自助提交联系人: ...」这类说明。
+  note?: string
   group_ids?: number[]
   scheduler_breakdown?: {
     unauthorized_penalty: number
@@ -677,6 +679,7 @@ export interface SystemSettings {
   show_full_usage_numbers: boolean
   public_key_usage_page_enabled: boolean
   public_image_studio_page_enabled: boolean
+  public_account_portal_page_enabled: boolean
   image_storage_backend: 'local' | 's3' | string
   image_s3_endpoint: string
   image_s3_region: string
@@ -1356,6 +1359,17 @@ export type ApiListResponse<K extends string, T> = {
 export interface OAuthURLResponse {
   auth_url: string
   session_id: string
+}
+
+// 公开账号自助门户:生成授权链接的响应。
+export interface AccountPortalAuthURLResponse {
+  auth_url: string
+  session_id: string
+}
+
+// 公开账号自助门户:提交授权码的响应。
+export interface AccountPortalSubmitResponse {
+  message: string
 }
 
 export interface UpdateOAuthAccountRequest {

@@ -383,6 +383,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	keyUsage.GET("/summary", h.GetPublicAPIKeyUsageSummary)
 	keyUsage.GET("/me", h.GetPublicAPIKeyUsageSummary)
 
+	// 账号自助添加公开门户（无 admin 鉴权；开关门控 + IP 限流；见 self_service.go）
+	accountPortal := r.Group("/api/account-portal")
+	accountPortal.Use(h.accountPortalMiddleware())
+	accountPortal.POST("/generate-auth-url", h.GenerateAccountPortalAuthURL)
+	accountPortal.POST("/submit-code", h.SubmitAccountPortalCode)
+
 	imageStudioPortal := r.Group("/api/image-studio")
 	imageStudioPortal.Use(h.imageStudioPortalAuthMiddleware())
 	imageStudioPortal.POST("/jobs", h.CreatePortalImageJob)
@@ -423,6 +429,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.DELETE("/accounts/:id/purge", h.PurgeAccount)
 	api.POST("/accounts/:id/refresh", h.RefreshAccount)
 	api.POST("/accounts/:id/enable", h.ToggleAccountEnabled)
+	api.PATCH("/accounts/:id/note", h.UpdateAccountNote)
 	api.POST("/accounts/:id/lock", h.ToggleAccountLock)
 	api.POST("/accounts/:id/reset-status", h.ResetAccountStatus)
 	api.POST("/accounts/:id/reset-credits", h.ResetCredits)
@@ -760,6 +767,7 @@ type accountResponse struct {
 	AllowedAPIKeyIDs         []int64                    `json:"allowed_api_key_ids"`
 	Tags                     []string                   `json:"tags"`
 	GroupIDs                 []int64                    `json:"group_ids"`
+	Note                     string                     `json:"note"`
 	// 图片配额信息
 	ImageQuotaRemaining *int   `json:"image_quota_remaining,omitempty"`
 	ImageQuotaTotal     *int   `json:"image_quota_total,omitempty"`
@@ -894,6 +902,7 @@ func (h *Handler) ListAccounts(c *gin.Context) {
 			Locked:                   row.Locked,
 			AllowedAPIKeyIDs:         row.GetCredentialInt64Slice("allowed_api_key_ids"),
 			Tags:                     append([]string(nil), row.Tags...),
+			Note:                     row.Note,
 			ScoreBiasOverride:        nullableInt64Pointer(row.ScoreBiasOverride),
 			ScoreBiasEffective:       effectiveScoreBias(planType, row.ScoreBiasOverride),
 			BaseConcurrencyOverride:  nullableInt64Pointer(row.BaseConcurrencyOverride),
@@ -4665,13 +4674,51 @@ func (h *Handler) ToggleAccountEnabled(c *gin.Context) {
 		return
 	}
 
-	h.store.ApplyAccountEnabled(id, *req.Enabled)
+	// 若启用一个尚未进入运行时池的账号（如自助门户提交的待审核账号），ApplyAccountEnabled
+	// 因找不到运行时对象返回 false；此时按需加载进调度池，使「批准」立即生效（issue #393）。
+	if !h.store.ApplyAccountEnabled(id, *req.Enabled) && *req.Enabled {
+		if err := h.store.LoadAccountByID(ctx, id); err != nil {
+			log.Printf("启用账号 %d 后加载进调度池失败: %v", id, err)
+		}
+	}
 
 	if *req.Enabled {
 		writeMessage(c, http.StatusOK, "账号已启用")
 	} else {
 		writeMessage(c, http.StatusOK, "账号已禁用")
 	}
+}
+
+// UpdateAccountNote 更新账号备注（通用标识字段）。
+func (h *Handler) UpdateAccountNote(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, "无效的账号 ID")
+		return
+	}
+	var req struct {
+		Note string `json:"note"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	note := security.SanitizeInput(strings.TrimSpace(req.Note))
+	if utf8.RuneCountInString(note) > 500 {
+		writeError(c, http.StatusBadRequest, "备注长度不能超过 500 字符")
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+	defer cancel()
+	if err := h.db.UpdateAccountNote(ctx, id, note); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(c, http.StatusNotFound, "账号不存在")
+			return
+		}
+		writeError(c, http.StatusInternalServerError, "更新备注失败: "+err.Error())
+		return
+	}
+	writeMessage(c, http.StatusOK, "备注已更新")
 }
 
 // ToggleAccountLock 切换账号的锁定状态
@@ -6122,6 +6169,7 @@ type settingsResponse struct {
 	ShowFullUsageNumbers               bool    `json:"show_full_usage_numbers"`
 	PublicKeyUsagePageEnabled          bool    `json:"public_key_usage_page_enabled"`
 	PublicImageStudioPageEnabled       bool    `json:"public_image_studio_page_enabled"`
+	PublicAccountPortalPageEnabled     bool    `json:"public_account_portal_page_enabled"`
 	ImageStorageBackend                string  `json:"image_storage_backend"`
 	ImageS3Endpoint                    string  `json:"image_s3_endpoint"`
 	ImageS3Region                      string  `json:"image_s3_region"`
@@ -6226,6 +6274,7 @@ type updateSettingsReq struct {
 	ShowFullUsageNumbers               *bool    `json:"show_full_usage_numbers"`
 	PublicKeyUsagePageEnabled          *bool    `json:"public_key_usage_page_enabled"`
 	PublicImageStudioPageEnabled       *bool    `json:"public_image_studio_page_enabled"`
+	PublicAccountPortalPageEnabled     *bool    `json:"public_account_portal_page_enabled"`
 	ImageStorageBackend                *string  `json:"image_storage_backend"`
 	ImageS3Endpoint                    *string  `json:"image_s3_endpoint"`
 	ImageS3Region                      *string  `json:"image_s3_region"`
@@ -6732,6 +6781,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 	showFullUsageNumbers := false
 	publicKeyUsagePageEnabled := true
 	publicImageStudioPageEnabled := true
+	publicAccountPortalPageEnabled := false
 	if dbSettings != nil && adminAuthSource != "env" {
 		adminSecret = dbSettings.AdminSecret
 	}
@@ -6741,6 +6791,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		showFullUsageNumbers = dbSettings.ShowFullUsageNumbers
 		publicKeyUsagePageEnabled = dbSettings.PublicKeyUsagePageEnabled
 		publicImageStudioPageEnabled = dbSettings.PublicImageStudioPageEnabled
+		publicAccountPortalPageEnabled = dbSettings.PublicAccountPortalPageEnabled
 	}
 	promptFilterCfg := h.store.GetPromptFilterConfig()
 	runtimeCfg := proxy.CurrentRuntimeSettings()
@@ -6849,6 +6900,7 @@ func (h *Handler) GetSettings(c *gin.Context) {
 		ShowFullUsageNumbers:               showFullUsageNumbers,
 		PublicKeyUsagePageEnabled:          publicKeyUsagePageEnabled,
 		PublicImageStudioPageEnabled:       publicImageStudioPageEnabled,
+		PublicAccountPortalPageEnabled:     publicAccountPortalPageEnabled,
 		ImageStorageBackend:                imgCfg.Backend,
 		ImageS3Endpoint:                    imgCfg.Endpoint,
 		ImageS3Region:                      imgCfg.Region,
@@ -6930,6 +6982,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 	showFullUsageNumbers := false
 	publicKeyUsagePageEnabled := true
 	publicImageStudioPageEnabled := true
+	publicAccountPortalPageEnabled := false
 	modelPricingOverrides := "{}"
 	modelPricingSyncURL := ""
 	persistedAutoResetCreditsEnabled := false
@@ -6947,6 +7000,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		showFullUsageNumbers = existingSettings.ShowFullUsageNumbers
 		publicKeyUsagePageEnabled = existingSettings.PublicKeyUsagePageEnabled
 		publicImageStudioPageEnabled = existingSettings.PublicImageStudioPageEnabled
+		publicAccountPortalPageEnabled = existingSettings.PublicAccountPortalPageEnabled
 		modelPricingOverrides = existingSettings.ModelPricingOverrides
 		modelPricingSyncURL = existingSettings.ModelPricingSyncURL
 		persistedAutoResetCreditsEnabled = existingSettings.AutoResetCreditsEnabled
@@ -7405,6 +7459,10 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		publicImageStudioPageEnabled = *req.PublicImageStudioPageEnabled
 		log.Printf("设置已更新: public_image_studio_page_enabled = %t", publicImageStudioPageEnabled)
 	}
+	if req.PublicAccountPortalPageEnabled != nil {
+		publicAccountPortalPageEnabled = *req.PublicAccountPortalPageEnabled
+		log.Printf("设置已更新: public_account_portal_page_enabled = %t", publicAccountPortalPageEnabled)
+	}
 	if req.AutoPause5hThreshold != nil || req.AutoPause7dThreshold != nil {
 		t5h := h.store.GetGlobalAutoPause5hThreshold()
 		t7d := h.store.GetGlobalAutoPause7dThreshold()
@@ -7753,6 +7811,7 @@ func (h *Handler) UpdateSettings(c *gin.Context) {
 		ShowFullUsageNumbers:               showFullUsageNumbers,
 		PublicKeyUsagePageEnabled:          publicKeyUsagePageEnabled,
 		PublicImageStudioPageEnabled:       publicImageStudioPageEnabled,
+		PublicAccountPortalPageEnabled:     publicAccountPortalPageEnabled,
 		ImageStorageConfig:                 imgConfigJSON,
 		BackgroundConfig:                   encodeBackgroundConfig(bgCfg),
 		AutoPause5hThreshold:               h.store.GetGlobalAutoPause5hThreshold(),

@@ -189,6 +189,8 @@ export default function APIKeys() {
   const [savingPublicUsagePage, setSavingPublicUsagePage] = useState(false);
   const [savingPublicImageStudioPage, setSavingPublicImageStudioPage] =
     useState(false);
+  const [savingPublicAccountPortalPage, setSavingPublicAccountPortalPage] =
+    useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const { showToast } = useToast();
   const { confirm, confirmDialog } = useConfirmDialog();
@@ -234,6 +236,8 @@ export default function APIKeys() {
   const publicUsagePageEnabled = data.settings?.public_key_usage_page_enabled ?? true;
   const publicImageStudioPageEnabled =
     data.settings?.public_image_studio_page_enabled ?? true;
+  const publicAccountPortalPageEnabled =
+    data.settings?.public_account_portal_page_enabled ?? false;
   const showInitialSkeleton = loading && keys.length === 0;
 
   const handleRefresh = useCallback(async () => {
@@ -253,6 +257,11 @@ export default function APIKeys() {
   const imageStudioUrl = useMemo(() => {
     if (typeof window === "undefined") return "/image-studio";
     return `${window.location.origin}/image-studio`;
+  }, []);
+
+  const accountPortalUrl = useMemo(() => {
+    if (typeof window === "undefined") return "/account-portal";
+    return `${window.location.origin}/account-portal`;
   }, []);
 
   const statusCounts = useMemo(() => {
@@ -434,6 +443,36 @@ export default function APIKeys() {
       showToast(getErrorMessage(err), "error");
     } finally {
       setSavingPublicImageStudioPage(false);
+    }
+  };
+
+  const handleTogglePublicAccountPortalPage = async () => {
+    const nextEnabled = !publicAccountPortalPageEnabled;
+    setSavingPublicAccountPortalPage(true);
+    try {
+      await api.updateSettings({
+        public_account_portal_page_enabled: nextEnabled,
+      });
+      showToast(
+        nextEnabled
+          ? t("apiKeys.publicAccountPortalEnabledToast")
+          : t("apiKeys.publicAccountPortalDisabledToast"),
+        "success",
+      );
+      setData((current) => ({
+        ...current,
+        settings: current.settings
+          ? {
+              ...current.settings,
+              public_account_portal_page_enabled: nextEnabled,
+            }
+          : current.settings,
+      }));
+      await reloadSilently();
+    } catch (err) {
+      showToast(getErrorMessage(err), "error");
+    } finally {
+      setSavingPublicAccountPortalPage(false);
     }
   };
 
@@ -1577,6 +1616,63 @@ export default function APIKeys() {
                           : publicImageStudioPageEnabled
                             ? t("apiKeys.disablePublicImageStudio")
                             : t("apiKeys.enablePublicImageStudio")}
+                      </Button>
+                    </div>
+                    <div className="flex flex-col gap-3 rounded-xl border border-border/80 bg-muted/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="text-sm font-semibold text-foreground">
+                          {t("apiKeys.publicAccountPortalTitle")}
+                        </div>
+                        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                          {t("apiKeys.publicAccountPortalDesc")}
+                        </p>
+                        {publicAccountPortalPageEnabled ? (
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
+                            <code
+                              className="min-w-0 max-w-full truncate rounded-md bg-muted px-2 py-1 font-mono text-[12px] text-foreground"
+                              title={accountPortalUrl}
+                            >
+                              {accountPortalUrl}
+                            </code>
+                            <Button
+                              variant="ghost"
+                              size="icon-xs"
+                              onClick={() => void handleCopy(accountPortalUrl)}
+                              title={t("apiKeys.publicUsageCopyUrl")}
+                            >
+                              <Copy className="size-3.5" />
+                            </Button>
+                            <a
+                              href={accountPortalUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+                            >
+                              <ExternalLink className="size-3.5" />
+                              {t("apiKeys.publicUsageOpen")}
+                            </a>
+                          </div>
+                        ) : null}
+                      </div>
+                      <Button
+                        variant={
+                          publicAccountPortalPageEnabled ? "outline" : "default"
+                        }
+                        size="sm"
+                        className="shrink-0"
+                        onClick={() => void handleTogglePublicAccountPortalPage()}
+                        disabled={savingPublicAccountPortalPage}
+                      >
+                        {publicAccountPortalPageEnabled ? (
+                          <EyeOff className="size-3.5" />
+                        ) : (
+                          <Eye className="size-3.5" />
+                        )}
+                        {savingPublicAccountPortalPage
+                          ? t("common.saving")
+                          : publicAccountPortalPageEnabled
+                            ? t("apiKeys.disablePublicAccountPortal")
+                            : t("apiKeys.enablePublicAccountPortal")}
                       </Button>
                     </div>
                   </div>

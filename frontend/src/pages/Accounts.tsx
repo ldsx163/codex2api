@@ -2955,6 +2955,51 @@ export default function Accounts() {
     }
   };
 
+  // 通过审核:启用自助提交的账号(enabled=true)。
+  const handleApprovePending = async (account: AccountRow) => {
+    try {
+      await api.toggleAccountEnabled(account.id, true);
+      showToast(t("accounts.pendingReview.approved"));
+      void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.enableFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    }
+  };
+
+  // 拒绝:删除自助提交的账号。
+  const handleRejectPending = async (account: AccountRow) => {
+    const confirmed = await confirm({
+      title: t("accounts.pendingReview.rejectTitle"),
+      description: t("accounts.pendingReview.rejectDesc", {
+        account: account.email || `ID ${account.id}`,
+      }),
+      confirmText: t("accounts.pendingReview.rejectConfirm"),
+      tone: "destructive",
+      confirmVariant: "destructive",
+    });
+    if (!confirmed) return;
+    try {
+      await api.deleteAccount(account.id);
+      showToast(t("accounts.pendingReview.rejected"));
+      void reload();
+    } catch (error) {
+      showToast(
+        t("accounts.deleteFailed", { error: getErrorMessage(error) }),
+        "error",
+      );
+    }
+  };
+
+  // 保存账号备注(PATCH /accounts/:id/note)。
+  const handleSaveNote = async (account: AccountRow, note: string) => {
+    await api.updateAccountNote(account.id, note);
+    showToast(t("accounts.pendingReview.noteSaved"));
+    void reloadSilently();
+  };
+
   const handleBatchDelete = async () => {
     const ids = Array.from(selected);
     if (ids.length === 0) return;
@@ -4709,6 +4754,13 @@ export default function Accounts() {
               </div>
             </div>
           )}
+
+          <PendingSelfServiceReviewPanel
+            accounts={accounts}
+            onApprove={handleApprovePending}
+            onReject={handleRejectPending}
+            onSaveNote={handleSaveNote}
+          />
 
           <Card>
             <CardContent className="p-3 sm:p-4">
@@ -12000,5 +12052,176 @@ function CooldownTimer({ until }: { until: string }) {
       <Hourglass className="size-3 shrink-0" aria-hidden="true" />
       {remaining}
     </span>
+  );
+}
+
+// 自助提交待审核面板:列出 enabled=false 且带 self-service 标签的账号,
+// 支持查看/编辑备注、通过(启用)与拒绝(删除)。
+const SELF_SERVICE_TAG = "self-service";
+
+function PendingSelfServiceReviewPanel({
+  accounts,
+  onApprove,
+  onReject,
+  onSaveNote,
+}: {
+  accounts: AccountRow[];
+  onApprove: (account: AccountRow) => void;
+  onReject: (account: AccountRow) => void;
+  onSaveNote: (account: AccountRow, note: string) => Promise<void>;
+}) {
+  const { t } = useTranslation();
+  const pending = useMemo(
+    () =>
+      accounts.filter(
+        (account) =>
+          account.enabled === false &&
+          (account.tags ?? []).includes(SELF_SERVICE_TAG),
+      ),
+    [accounts],
+  );
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draftNote, setDraftNote] = useState("");
+  const [savingId, setSavingId] = useState<number | null>(null);
+
+  if (pending.length === 0) return null;
+
+  const startEdit = (account: AccountRow) => {
+    setEditingId(account.id);
+    setDraftNote(account.note ?? "");
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setDraftNote("");
+  };
+
+  const saveNote = async (account: AccountRow) => {
+    setSavingId(account.id);
+    try {
+      await onSaveNote(account, draftNote.trim());
+      setEditingId(null);
+      setDraftNote("");
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  return (
+    <Card className="border-amber-500/40 bg-amber-500/[0.04] shadow-sm">
+      <CardContent className="p-3 sm:p-4">
+        <div className="mb-3 flex items-center gap-2.5">
+          <div className="flex size-9 items-center justify-center rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-300">
+            <Hourglass className="size-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-semibold tracking-tight">
+              {t("accounts.pendingReview.title")}
+            </div>
+            <div className="text-[11px] text-muted-foreground">
+              {t("accounts.pendingReview.count", { count: pending.length })} ·{" "}
+              {t("accounts.pendingReview.desc")}
+            </div>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          {pending.map((account) => {
+            const editing = editingId === account.id;
+            const saving = savingId === account.id;
+            return (
+              <div
+                key={account.id}
+                className="flex flex-col gap-3 rounded-xl border border-border/70 bg-card p-3 sm:flex-row sm:items-start sm:justify-between"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-foreground">
+                      <Mail className="size-3.5 text-muted-foreground" />
+                      {account.email || `ID ${account.id}`}
+                    </span>
+                    <Badge className="border-transparent bg-amber-500/14 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+                      {SELF_SERVICE_TAG}
+                    </Badge>
+                    {account.plan_type ? (
+                      <span className="text-[11px] text-muted-foreground">
+                        {account.plan_type}
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {editing ? (
+                    <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Input
+                        value={draftNote}
+                        onChange={(e) => setDraftNote(e.target.value)}
+                        placeholder={t("accounts.pendingReview.notePlaceholder")}
+                        className="h-9"
+                      />
+                      <div className="flex shrink-0 gap-1.5">
+                        <Button
+                          size="sm"
+                          className="h-9"
+                          disabled={saving}
+                          onClick={() => void saveNote(account)}
+                        >
+                          {saving ? (
+                            <RotateCcw className="size-3.5 animate-spin" />
+                          ) : (
+                            <Check className="size-3.5" />
+                          )}
+                          {t("common.save")}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-9"
+                          disabled={saving}
+                          onClick={cancelEdit}
+                        >
+                          <X className="size-3.5" />
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => startEdit(account)}
+                      className="mt-1.5 flex w-full items-start gap-1.5 rounded-md text-left text-xs leading-relaxed text-muted-foreground transition-colors hover:text-foreground"
+                      title={t("accounts.pendingReview.editNote")}
+                    >
+                      <Pencil className="mt-0.5 size-3 shrink-0" />
+                      <span className="min-w-0 break-words">
+                        {account.note || t("accounts.pendingReview.noNote")}
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex shrink-0 gap-1.5">
+                  <Button
+                    size="sm"
+                    className="h-9"
+                    onClick={() => onApprove(account)}
+                  >
+                    <Check className="size-3.5" />
+                    {t("accounts.pendingReview.approve")}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-9"
+                    onClick={() => onReject(account)}
+                  >
+                    <Trash2 className="size-3.5" />
+                    {t("accounts.pendingReview.reject")}
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

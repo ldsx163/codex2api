@@ -1199,6 +1199,7 @@ export default function Settings() {
     show_full_usage_numbers: false,
     public_key_usage_page_enabled: true,
     public_image_studio_page_enabled: true,
+    public_account_portal_page_enabled: false,
     image_storage_backend: 'local',
     image_s3_endpoint: '',
     image_s3_region: '',
