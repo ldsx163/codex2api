@@ -845,6 +845,69 @@ func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *
 	}
 }
 
+func TestResponsesSkipsWebsocketWhenBodyReachesLearnedTooBigThreshold(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	previousExec := WebsocketExecuteFunc
+	previousSettings := CurrentRuntimeSettings()
+	previousResin := resinCfg.Load()
+	t.Cleanup(func() {
+		WebsocketExecuteFunc = previousExec
+		ApplyRuntimeSettings(previousSettings)
+		resinCfg.Store(previousResin)
+		globalWSSizeRouter = websocketSizeRouter{}
+	})
+	nextSettings := previousSettings
+	nextSettings.CodexForceWebsocket = true
+	ApplyRuntimeSettings(nextSettings)
+
+	wsCalls := 0
+	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, poolRouteKey string) (*http.Response, error) {
+		wsCalls++
+		return nil, errors.New("websocket send error: websocket: close 1009 (message too big)")
+	}
+
+	httpCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(
+			`data: {"type":"response.output_text.delta","delta":"size-routed"}` + "\n\n" +
+				`data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2},"service_tier":"default"}}` + "\n\n",
+		))
+	}))
+	defer upstream.Close()
+	SetResinConfig(&ResinConfig{BaseURL: upstream.URL, PlatformName: "test"})
+
+	store := auth.NewStore(nil, nil, &database.SystemSettings{MaxConcurrency: 1, TestConcurrency: 1, TestModel: "gpt-5.4"})
+	account := &auth.Account{DBID: 1, AccessToken: "at-1", PlanType: "pro", AccountID: "acct-1"}
+	account.SetDispatchCountLimit(1)
+	store.AddAccount(account)
+	handler := NewHandler(store, nil, &config.Config{AllowAnonymousV1: true}, nil)
+
+	// 预置学习状态:任何体积的请求都视为达到已知 1009 阈值
+	globalWSSizeRouter = websocketSizeRouter{minTooBig: 1, learnedAt: time.Now()}
+
+	body := []byte(`{"model":"gpt-5.4","input":"hello","stream":true}`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = req
+
+	handler.Responses(ctx)
+
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), "size-routed") {
+		t.Fatalf("status = %d, body = %q", recorder.Code, recorder.Body.String())
+	}
+	if wsCalls != 0 {
+		t.Fatalf("wsCalls = %d, want 0 (体积路由应完全跳过 WS)", wsCalls)
+	}
+	if httpCalls != 1 {
+		t.Fatalf("httpCalls = %d, want 1", httpCalls)
+	}
+}
+
 func TestResponsesHTTPIngressRetainsAccountWhenWebsocketRequestReturnsMessageTooBig(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

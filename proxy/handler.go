@@ -1896,6 +1896,13 @@ func (h *Handler) Responses(c *gin.Context) {
 		if useWebsocket && rawResponsesBodyShouldForceHTTPForImageGeneration(rawBody) {
 			useWebsocket = false
 		}
+		// 体积达到已学习的 1009 阈值时直接首发 HTTP,跳过 WS 必败等待(issue #404)。
+		if useWebsocket && globalWSSizeRouter.PreferHTTP(len(codexBody)) {
+			useWebsocket = false
+			if attempt == 0 {
+				log.Printf("[WS] 请求体 %dKB 达到已学习的 1009 体积阈值，直接走 HTTP 上游 (endpoint=/v1/responses)", len(codexBody)/1024)
+			}
+		}
 
 		// 提取 API Key 用于设备指纹稳定化
 		apiKey := strings.TrimPrefix(c.GetHeader("Authorization"), "Bearer ")
@@ -2344,6 +2351,7 @@ func (h *Handler) Responses(c *gin.Context) {
 			}
 			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
 				wsElapsed := time.Since(start)
+				globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 				wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(reqErr.Error()))
 				log.Printf("上游 WebSocket 1009，保留账号租约并降级 HTTP (fallback_id=%s, source=%s, attempt=%d, account=%d, endpoint=/v1/responses, ws_elapsed_ms=%d): %v", wsHTTPFallback.ID(), wsHTTPFallback.Source(), attempt+1, account.ID(), wsElapsed.Milliseconds(), reqErr)
 				continue
@@ -2727,6 +2735,7 @@ func (h *Handler) Responses(c *gin.Context) {
 		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			wsElapsed := time.Since(start)
 			resp.Body.Close()
+			globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 			wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(outcome.failureMessage))
 			log.Printf("上游 WebSocket 1009，首包前保留账号租约并降级 HTTP (fallback_id=%s, source=%s, attempt=%d, account=%d, endpoint=/v1/responses, ws_elapsed_ms=%d): %s", wsHTTPFallback.ID(), wsHTTPFallback.Source(), attempt+1, account.ID(), wsElapsed.Milliseconds(), outcome.failureMessage)
 			continue
@@ -3507,6 +3516,13 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if useWebsocket && rawResponsesBodyShouldForceHTTPForImageGeneration(codexBody) {
 			useWebsocket = false
 		}
+		// 体积达到已学习的 1009 阈值时直接首发 HTTP,跳过 WS 必败等待(issue #404)。
+		if useWebsocket && globalWSSizeRouter.PreferHTTP(len(codexBody)) {
+			useWebsocket = false
+			if attempt == 0 {
+				log.Printf("[WS] 请求体 %dKB 达到已学习的 1009 体积阈值，直接走 HTTP 上游 (endpoint=/v1/chat/completions)", len(codexBody)/1024)
+			}
+		}
 		upstreamEndpoint := "/v1/responses"
 		if isRelayAccount {
 			relayBaseURL, _ := account.OpenAIResponsesCredentials()
@@ -3579,6 +3595,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			}
 			if useWebsocket && kind == upstreamErrorKindMessageTooBig {
 				wsElapsed := time.Since(start)
+				globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 				wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(reqErr.Error()))
 				log.Printf("上游 WebSocket 1009，保留账号租约并降级 HTTP (fallback_id=%s, source=%s, attempt=%d, account=%d, endpoint=/v1/chat/completions, ws_elapsed_ms=%d): %v", wsHTTPFallback.ID(), wsHTTPFallback.Source(), attempt+1, account.ID(), wsElapsed.Milliseconds(), reqErr)
 				continue
@@ -3885,6 +3902,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		if shouldFallbackWebsocketMessageTooBigToHTTP(outcome, useWebsocket, wroteAnyBody, c.Request.Context().Err(), writeErr) {
 			wsElapsed := time.Since(start)
 			resp.Body.Close()
+			globalWSSizeRouter.RecordMessageTooBig(len(codexBody))
 			wsHTTPFallback.Retain(account, proxyURL, wsElapsed, websocketMessageTooBigSource(outcome.failureMessage))
 			log.Printf("上游 WebSocket 1009，首包前保留账号租约并降级 HTTP (fallback_id=%s, source=%s, attempt=%d, account=%d, endpoint=/v1/chat/completions, ws_elapsed_ms=%d): %s", wsHTTPFallback.ID(), wsHTTPFallback.Source(), attempt+1, account.ID(), wsElapsed.Milliseconds(), outcome.failureMessage)
 			continue
