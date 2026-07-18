@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -586,9 +587,13 @@ func TestResponsesWebSocketFallsBackToHTTPWhenUpstreamMessageTooBig(t *testing.T
 
 	wsCalls := 0
 	wsAccountIDs := make(chan int64, 4)
+	wsLiteMetadata := make(chan string, 4)
+	wsNamespaces := make(chan string, 4)
 	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, poolRouteKey string) (*http.Response, error) {
 		wsCalls++
 		wsAccountIDs <- account.ID()
+		wsLiteMetadata <- gjson.GetBytes(requestBody, "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite").String()
+		wsNamespaces <- gjson.GetBytes(requestBody, "input.0.namespace").String()
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -598,9 +603,14 @@ func TestResponsesWebSocketFallsBackToHTTPWhenUpstreamMessageTooBig(t *testing.T
 
 	httpCalls := 0
 	httpAccountIDs := make(chan string, 4)
+	httpLiteHeaders := make(chan string, 4)
+	httpNamespaces := make(chan string, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpCalls++
 		httpAccountIDs <- r.Header.Get("X-Resin-Account")
+		httpLiteHeaders <- r.Header.Get("X-OpenAI-Internal-Codex-Responses-Lite")
+		requestBody, _ := io.ReadAll(r.Body)
+		httpNamespaces <- gjson.GetBytes(requestBody, "input.0.namespace").String()
 		if !strings.HasSuffix(r.URL.Path, "/backend-api/codex/responses") {
 			t.Fatalf("upstream path = %q, want Resin path ending /backend-api/codex/responses", r.URL.Path)
 		}
@@ -636,7 +646,11 @@ func TestResponsesWebSocketFallsBackToHTTPWhenUpstreamMessageTooBig(t *testing.T
 	}
 	defer conn.Close()
 
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"model":"gpt-5.4","input":"hello"}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{
+		"model":"gpt-5.4",
+		"input":[{"type":"function_call","name":"run","namespace":"code_tools","arguments":"{}","call_id":"call_1"}],
+		"client_metadata":{"ws_request_header_x_openai_internal_codex_responses_lite":"true"}
+	}`)); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
 
@@ -660,6 +674,18 @@ func TestResponsesWebSocketFallsBackToHTTPWhenUpstreamMessageTooBig(t *testing.T
 	}
 	if httpCalls != 1 {
 		t.Fatalf("HTTP upstream calls = %d, want 1", httpCalls)
+	}
+	if got := <-wsLiteMetadata; got != "true" {
+		t.Fatalf("WS upstream Lite metadata = %q, want true", got)
+	}
+	if got := <-wsNamespaces; got != "code_tools" {
+		t.Fatalf("WS upstream namespace = %q, want code_tools", got)
+	}
+	if got := <-httpLiteHeaders; got != "true" {
+		t.Fatalf("HTTP fallback Lite header = %q, want true", got)
+	}
+	if got := <-httpNamespaces; got != "code_tools" {
+		t.Fatalf("HTTP fallback namespace = %q, want code_tools", got)
 	}
 	wsAccountID := <-wsAccountIDs
 	httpAccountID := <-httpAccountIDs
@@ -699,9 +725,11 @@ func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *
 
 	wsCalls := 0
 	wsAccountIDs := make(chan int64, 4)
+	wsLiteMetadata := make(chan string, 4)
 	WebsocketExecuteFunc = func(ctx context.Context, account *auth.Account, requestBody []byte, sessionID string, proxyOverride string, apiKey string, deviceCfg *DeviceProfileConfig, headers http.Header, poolRouteKey string) (*http.Response, error) {
 		wsCalls++
 		wsAccountIDs <- account.ID()
+		wsLiteMetadata <- gjson.GetBytes(requestBody, "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite").String()
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -713,10 +741,12 @@ func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *
 	httpAccountIDs := make(chan string, 4)
 	httpSessionIDs := make(chan string, 4)
 	httpCacheKeys := make(chan string, 4)
+	httpLiteHeaders := make(chan string, 4)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpCalls++
 		httpAccountIDs <- r.Header.Get("X-Resin-Account")
 		httpSessionIDs <- r.Header.Get("Session_id")
+		httpLiteHeaders <- r.Header.Get("X-OpenAI-Internal-Codex-Responses-Lite")
 		requestBody, _ := io.ReadAll(r.Body)
 		httpCacheKeys <- gjson.GetBytes(requestBody, "prompt_cache_key").String()
 		if !strings.HasSuffix(r.URL.Path, "/backend-api/codex/responses") {
@@ -743,6 +773,7 @@ func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Codex2API-Affinity-Key", "tenant-user-42")
+	req.Header.Set("X-OpenAI-Internal-Codex-Responses-Lite", "true")
 	sessionIdentity := resolveRequestSessionIdentity(req.Header, body)
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
@@ -761,6 +792,12 @@ func TestResponsesHTTPIngressFallsBackToHTTPWhenForcedWebsocketMessageTooBig(t *
 	}
 	if httpCalls != 1 {
 		t.Fatalf("HTTP upstream calls = %d, want 1", httpCalls)
+	}
+	if got := <-wsLiteMetadata; got != "true" {
+		t.Fatalf("WS upstream Lite metadata = %q, want true", got)
+	}
+	if got := <-httpLiteHeaders; got != "true" {
+		t.Fatalf("HTTP fallback Lite header = %q, want true", got)
 	}
 	expectedUpstreamID := resolveUpstreamSessionID(0, sessionIdentity.upstreamSeed, sessionIdentity.explicitUpstreamID, false)
 	httpSessionID := <-httpSessionIDs
@@ -1549,10 +1586,15 @@ func TestResponsesCompactCodexReadErrorRetryReturnsBadGatewayAndSyncsUsage(t *te
 		resinCfg.Store(previousResin)
 	})
 
+	var upstreamMu sync.Mutex
+	var liteHeaders []string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/backend-api/codex/responses/compact") {
 			t.Fatalf("upstream path = %q, want Resin path ending /backend-api/codex/responses/compact", r.URL.Path)
 		}
+		upstreamMu.Lock()
+		liteHeaders = append(liteHeaders, r.Header.Get(codexResponsesLiteHeader))
+		upstreamMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Content-Length", "128")
 		w.Header().Set("x-codex-primary-used-percent", "100")
@@ -1581,6 +1623,7 @@ func TestResponsesCompactCodexReadErrorRetryReturnsBadGatewayAndSyncsUsage(t *te
 	body := []byte(`{"model":"gpt-5.4","input":"hello"}`)
 	req := httptest.NewRequest(http.MethodPost, "/v1/responses/compact", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(codexResponsesLiteHeader, "true")
 	recorder := httptest.NewRecorder()
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = req
@@ -1595,6 +1638,16 @@ func TestResponsesCompactCodexReadErrorRetryReturnsBadGatewayAndSyncsUsage(t *te
 	}
 	if !account.IsPremium5hRateLimited() {
 		t.Fatal("account should sync Codex usage headers and enter premium 5h rate_limited state")
+	}
+	upstreamMu.Lock()
+	defer upstreamMu.Unlock()
+	if len(liteHeaders) == 0 {
+		t.Fatal("compact upstream was not called")
+	}
+	for attempt, got := range liteHeaders {
+		if got != "true" {
+			t.Fatalf("compact attempt %d Lite header = %q, want true", attempt+1, got)
+		}
 	}
 }
 
