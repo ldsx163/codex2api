@@ -2367,6 +2367,7 @@ type Store struct {
 	codexWSHideUpstreamErrors   atomic.Bool  // 隐藏上游 WS 原始错误，默认开启
 	codexWSSilentRetryEnabled   atomic.Bool  // 首包前上游 WS 错误静默换号重试，默认开启
 	codexWSSilentMaxRetries     atomic.Int64 // WS 静默换号最大重试次数，默认 2
+	codexWSSizeRouterEnabled    atomic.Bool  // 1009 自学习体积路由，默认开启
 
 	// Codex 思考截断自动续想（默认关闭，不影响现有路径）
 	codexContinueThinkingEnabled atomic.Bool  // 检测到上游截断思考时自动续想并折叠成单响应
@@ -2795,6 +2796,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 			CodexWSHideUpstreamErrors:          true,
 			CodexWSSilentRetryEnabled:          true,
 			CodexWSSilentMaxRetries:            2,
+			CodexWSSizeRouterEnabled:           true,
 			CodexContinueMaxRounds:             8,
 			AutoPause5hGuardBandPercent:        defaultAutoPause5hGuardBandPercent,
 			AutoPause5hGuardConcurrency:        defaultAutoPause5hGuardConcurrency,
@@ -2876,6 +2878,7 @@ func NewStore(db *database.DB, tc cache.TokenCache, settings *database.SystemSet
 	s.codexWSHideUpstreamErrors.Store(settings.CodexWSHideUpstreamErrors)
 	s.codexWSSilentRetryEnabled.Store(settings.CodexWSSilentRetryEnabled)
 	s.codexWSSilentMaxRetries.Store(normalizeWSSilentMaxRetries(settings.CodexWSSilentMaxRetries))
+	s.codexWSSizeRouterEnabled.Store(settings.CodexWSSizeRouterEnabled)
 	s.codexContinueThinkingEnabled.Store(settings.CodexContinueThinkingEnabled)
 	s.codexContinueMaxRounds.Store(int64(database.NormalizeCodexContinueMaxRounds(settings.CodexContinueMaxRounds)))
 	s.codexCLIVersionSyncEnabled.Store(settings.CodexCLIVersionSyncEnabled)
@@ -3095,6 +3098,22 @@ func (s *Store) CodexWSSilentRetryEnabled() bool {
 		return true
 	}
 	return s.codexWSSilentRetryEnabled.Load()
+}
+
+// SetCodexWSSizeRouterEnabled 设置是否启用 1009 自学习体积路由。
+func (s *Store) SetCodexWSSizeRouterEnabled(enabled bool) {
+	if s == nil {
+		return
+	}
+	s.codexWSSizeRouterEnabled.Store(enabled)
+}
+
+// CodexWSSizeRouterEnabled 返回是否启用 1009 自学习体积路由。
+func (s *Store) CodexWSSizeRouterEnabled() bool {
+	if s == nil {
+		return true
+	}
+	return s.codexWSSizeRouterEnabled.Load()
 }
 
 // SetCodexWSSilentMaxRetries 设置 WS 静默换号最大重试次数。
